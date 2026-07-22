@@ -195,7 +195,7 @@ fn install_precompiled_metal_library(
     });
 
     println!(
-        "cargo:warning=using precompiled Metal shaders from {} because the Metal toolchain is unavailable",
+        "cargo:warning=using precompiled Metal shaders from {}",
         precompiled_dir.display(),
     );
 }
