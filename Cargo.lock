@@ -16129,6 +16129,7 @@ dependencies = [
  "resvg",
  "rust-embed 8.7.2",
  "serde",
+ "sha2 0.10.9",
  "sum_tree",
  "takecell",
  "tauri-winrt-notification",

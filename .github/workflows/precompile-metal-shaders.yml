@@ -1,0 +1,69 @@
+name: Precompile Metal shaders
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/precompile-metal-shaders.yml
+      - crates/warpui/src/platform/mac/rendering/metal/shaders/shader_types.h
+      - crates/warpui/src/platform/mac/rendering/metal/shaders/shaders.metal
+
+permissions:
+  contents: read
+
+jobs:
+  precompile:
+    name: Build WarpUI Metal library
+    runs-on: macos-15
+    timeout-minutes: 20
+    env:
+      MACOSX_DEPLOYMENT_TARGET: "10.14"
+      OUTPUT_DIR: metal-shader-artifact
+      HEADER_PATH: crates/warpui/src/platform/mac/rendering/metal/shaders/shader_types.h
+      METAL_PATH: crates/warpui/src/platform/mac/rendering/metal/shaders/shaders.metal
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Select Xcode 26
+        uses: maxim-lobanov/setup-xcode@ed7a3b1fda3918c0306d1b724322adc0b8cc0a90 # v1.7.0
+        with:
+          xcode-version: "26"
+
+      - name: Install Metal Toolchain
+        run: xcodebuild -downloadComponent MetalToolchain
+
+      - name: Compile Metal shaders
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          xcrun --sdk macosx metal \
+            -c "$METAL_PATH" \
+            -o "$OUTPUT_DIR/shaders.air" \
+            "-mmacosx-version-min=$MACOSX_DEPLOYMENT_TARGET"
+          xcrun --sdk macosx metallib \
+            "$OUTPUT_DIR/shaders.air" \
+            -o "$OUTPUT_DIR/shaders.metallib"
+
+      - name: Create integrity manifest
+        run: |
+          header_hash="$(shasum -a 256 "$HEADER_PATH" | awk '{print $1}')"
+          metal_hash="$(shasum -a 256 "$METAL_PATH" | awk '{print $1}')"
+          metallib_hash="$(shasum -a 256 "$OUTPUT_DIR/shaders.metallib" | awk '{print $1}')"
+          xcode_version="$(xcodebuild -version | tr '\n' ' ')"
+          {
+            echo "shader_types_sha256=$header_hash"
+            echo "shaders_metal_sha256=$metal_hash"
+            echo "metallib_sha256=$metallib_hash"
+            echo "macosx_deployment_target=$MACOSX_DEPLOYMENT_TARGET"
+            echo "xcode_version=$xcode_version"
+          } > "$OUTPUT_DIR/shaders.metallib.manifest"
+
+      - name: Upload precompiled shaders
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: warpui-precompiled-metal-shaders
+          path: |
+            metal-shader-artifact/shaders.metallib
+            metal-shader-artifact/shaders.metallib.manifest
+          if-no-files-found: error
+          retention-days: 30

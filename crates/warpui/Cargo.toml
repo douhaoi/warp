@@ -231,3 +231,4 @@ tauri-winrt-notification = "0.7.0"
 bindgen = "0.70.1"
 cc = { version = "1.0", features = ["parallel"] }
 cfg_aliases.workspace = true
+sha2.workspace = true

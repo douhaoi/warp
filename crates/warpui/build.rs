@@ -4,10 +4,18 @@
 #![allow(clippy::disallowed_types)]
 
 use std::env;
-use std::path::PathBuf;
+use std::fmt::Write;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cfg_aliases::cfg_aliases;
+use sha2::{Digest, Sha256};
+
+const HEADER_PATH: &str = "src/platform/mac/rendering/metal/shaders/shader_types.h";
+const METAL_PATH: &str = "src/platform/mac/rendering/metal/shaders/shaders.metal";
+const PRECOMPILED_METAL_DIR: &str = "src/platform/mac/rendering/metal/shaders/precompiled";
+const PRECOMPILED_METAL_DIR_ENV: &str = "WARP_PRECOMPILED_METAL_DIR";
 
 fn main() {
     cfg_aliases! {
@@ -29,10 +37,9 @@ fn main() {
 }
 
 fn bindgen_shader_types() {
-    let header_path = "src/platform/mac/rendering/metal/shaders/shader_types.h";
-    println!("cargo:rerun-if-changed={header_path}");
+    println!("cargo:rerun-if-changed={HEADER_PATH}");
     let bindings = bindgen::Builder::default()
-        .header(header_path)
+        .header(HEADER_PATH)
         .allowlist_type("vector_float2")
         .allowlist_type("Uniforms")
         .allowlist_type("PerRectUniforms")
@@ -60,7 +67,7 @@ fn bindgen_shader_types() {
             "-D__AVX10_2_512SATCVTINTRIN_H",
         ])
         .generate()
-        .unwrap_or_else(|_| panic!("unable to generate bindings for {header_path}"));
+        .unwrap_or_else(|_| panic!("unable to generate bindings for {HEADER_PATH}"));
 
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
     bindings
@@ -69,8 +76,6 @@ fn bindgen_shader_types() {
 }
 
 fn compile_metal_shaders() {
-    let header_path = "src/platform/mac/rendering/metal/shaders/shader_types.h";
-    let metal_path = "src/platform/mac/rendering/metal/shaders/shaders.metal";
     let out_path = PathBuf::from(env::var("OUT_DIR").unwrap());
 
     let air_path = out_path.join("shaders.air");
@@ -79,9 +84,10 @@ fn compile_metal_shaders() {
     let lib_path = out_path.join("shaders.metallib");
     let lib_path = lib_path.to_str().unwrap();
 
-    println!("cargo:rerun-if-changed={header_path}");
-    println!("cargo:rerun-if-changed={metal_path}");
+    println!("cargo:rerun-if-changed={HEADER_PATH}");
+    println!("cargo:rerun-if-changed={METAL_PATH}");
     println!("cargo:rerun-if-env-changed=MACOSX_DEPLOYMENT_TARGET");
+    println!("cargo:rerun-if-env-changed={PRECOMPILED_METAL_DIR_ENV}");
 
     // Pin the AIR bytecode target to `MACOSX_DEPLOYMENT_TARGET`. Without an
     // explicit `-mmacosx-version-min`, `xcrun metal` on recent Xcode toolchains
@@ -90,6 +96,19 @@ fn compile_metal_shaders() {
     // resulting `.metallib` during pipeline state creation. See #11700.
     let min_macos_version = env::var("MACOSX_DEPLOYMENT_TARGET")
         .expect("MACOSX_DEPLOYMENT_TARGET must be set for macOS builds");
+
+    let explicit_precompiled_dir = env::var_os(PRECOMPILED_METAL_DIR_ENV).map(PathBuf::from);
+    if let Some(precompiled_dir) = explicit_precompiled_dir
+        .or_else(|| (!metal_tools_available()).then(|| PathBuf::from(PRECOMPILED_METAL_DIR)))
+    {
+        install_precompiled_metal_library(
+            &precompiled_dir,
+            Path::new(lib_path),
+            &min_macos_version,
+        );
+        return;
+    }
+
     let min_version_arg = format!("-mmacosx-version-min={min_macos_version}");
 
     let mut compile_args = vec![
@@ -97,7 +116,7 @@ fn compile_metal_shaders() {
         "macosx",
         "metal",
         "-c",
-        metal_path,
+        METAL_PATH,
         "-o",
         air_path,
         &min_version_arg,
@@ -125,6 +144,84 @@ fn compile_metal_shaders() {
         "error compling metal shaders to .metallib; {}",
         std::str::from_utf8(&result.stderr).unwrap(),
     );
+}
+
+fn metal_tools_available() -> bool {
+    ["metal", "metallib"].iter().all(|tool| {
+        Command::new("xcrun")
+            .args(["--sdk", "macosx", "--find", tool])
+            .output()
+            .is_ok_and(|output| output.status.success())
+    })
+}
+
+fn install_precompiled_metal_library(
+    precompiled_dir: &Path,
+    destination: &Path,
+    min_macos_version: &str,
+) {
+    let metallib_path = precompiled_dir.join("shaders.metallib");
+    let manifest_path = precompiled_dir.join("shaders.metallib.manifest");
+
+    println!("cargo:rerun-if-changed={}", metallib_path.display());
+    println!("cargo:rerun-if-changed={}", manifest_path.display());
+
+    let manifest = fs::read_to_string(&manifest_path).unwrap_or_else(|error| {
+        panic!(
+            "Metal toolchain is unavailable and the precompiled shader manifest could not be read at {}: {error}. Run the precompile-metal-shaders GitHub Actions workflow and install its artifact, or set {PRECOMPILED_METAL_DIR_ENV}",
+            manifest_path.display(),
+        )
+    });
+
+    verify_manifest_value(
+        &manifest,
+        "shader_types_sha256",
+        &sha256_file(Path::new(HEADER_PATH)),
+    );
+    verify_manifest_value(
+        &manifest,
+        "shaders_metal_sha256",
+        &sha256_file(Path::new(METAL_PATH)),
+    );
+    verify_manifest_value(&manifest, "metallib_sha256", &sha256_file(&metallib_path));
+    verify_manifest_value(&manifest, "macosx_deployment_target", min_macos_version);
+
+    fs::copy(&metallib_path, destination).unwrap_or_else(|error| {
+        panic!(
+            "unable to copy precompiled Metal library from {} to {}: {error}",
+            metallib_path.display(),
+            destination.display(),
+        )
+    });
+
+    println!(
+        "cargo:warning=using precompiled Metal shaders from {} because the Metal toolchain is unavailable",
+        precompiled_dir.display(),
+    );
+}
+
+fn verify_manifest_value(manifest: &str, key: &str, expected: &str) {
+    let actual = manifest.lines().find_map(|line| {
+        let (manifest_key, value) = line.split_once('=')?;
+        (manifest_key == key).then_some(value)
+    });
+
+    assert_eq!(
+        actual,
+        Some(expected),
+        "precompiled Metal shader manifest has an invalid {key}; regenerate it with the precompile-metal-shaders GitHub Actions workflow",
+    );
+}
+
+fn sha256_file(path: &Path) -> String {
+    let bytes = fs::read(path)
+        .unwrap_or_else(|error| panic!("unable to read {} for SHA-256: {error}", path.display()));
+    Sha256::digest(bytes)
+        .iter()
+        .fold(String::with_capacity(64), |mut output, byte| {
+            write!(output, "{byte:02x}").unwrap();
+            output
+        })
 }
 
 fn compile_objc_lib() {
