@@ -2,6 +2,9 @@ name: Build macOS self-use DMG
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - feature/zh-cn-localization
 
 permissions:
   contents: read
