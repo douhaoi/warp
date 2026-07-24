@@ -532,7 +532,10 @@ use crate::workspace::view::orchestration_launch_modal::{
     OrchestrationLaunchModal, OrchestrationLaunchModalEvent,
 };
 use crate::workspace::view::right_panel::{RightPanelEvent, RightPanelView};
-use crate::workspace::{ForkFromExchange, ForkedConversationDestination};
+use crate::workspace::{
+    ForkFromExchange, ForkedConversationDestination,
+    resource_center_main_page_is_supported_for_profile,
+};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::workspaces::workspace::AdminEnablementSetting;
 use crate::{
@@ -988,6 +991,29 @@ pub struct TransferredTab {
 
 fn tools_panel_is_supported_for_profile(product_profile: ProductProfile) -> bool {
     product_profile != ProductProfile::TerminalOnly
+}
+
+fn resource_center_toggle_is_allowed_for_profile(
+    product_profile: ProductProfile,
+    is_resource_center_open: bool,
+) -> bool {
+    product_profile == ProductProfile::Full || is_resource_center_open
+}
+
+fn workspace_action_is_supported_for_profile(
+    action: &WorkspaceAction,
+    product_profile: ProductProfile,
+    is_resource_center_open: bool,
+) -> bool {
+    match action {
+        WorkspaceAction::ToggleResourceCenter => {
+            resource_center_toggle_is_allowed_for_profile(product_profile, is_resource_center_open)
+        }
+        WorkspaceAction::ViewLatestChangelog => {
+            resource_center_main_page_is_supported_for_profile(product_profile)
+        }
+        _ => true,
+    }
 }
 
 fn is_terminal_only_panel_action_disabled(action: &WorkspaceAction) -> bool {
@@ -4716,6 +4742,10 @@ impl Workspace {
         request_type: ChangelogRequestType,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !resource_center_main_page_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         self.changelog_model.update(ctx, |changelog_model, ctx| {
             changelog_model.check_for_changelog(request_type, ctx);
             ctx.notify();
@@ -6552,6 +6582,10 @@ impl Workspace {
     }
 
     fn view_latest_changelog(&mut self, ctx: &mut ViewContext<Self>) {
+        if !resource_center_main_page_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         self.update_toast_stack.update(ctx, |stack, ctx| {
             stack.clear_toasts(ctx);
         });
@@ -9197,6 +9231,10 @@ impl Workspace {
     }
 
     fn open_resource_center_main_page(&mut self, ctx: &mut ViewContext<Self>) {
+        if !resource_center_main_page_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         // Set current page to Main
         self.resource_center_view
             .update(ctx, |resource_center_view, ctx| {
@@ -9208,6 +9246,13 @@ impl Workspace {
     }
 
     pub fn toggle_resource_center(&mut self, ctx: &mut ViewContext<Self>) {
+        if !resource_center_toggle_is_allowed_for_profile(
+            ChannelState::product_profile(),
+            self.current_workspace_state.is_resource_center_open,
+        ) {
+            return;
+        }
+
         // Close AI Assistant panel when resource center is opened
         if !self.current_workspace_state.is_resource_center_open {
             self.current_workspace_state.is_ai_assistant_panel_open = false;
@@ -9731,10 +9776,15 @@ impl Workspace {
             }
         }
 
+        if resource_center_main_page_is_supported_for_profile(ChannelState::product_profile()) {
+            items.push(
+                MenuItemFields::new("What's new")
+                    .with_on_select_action(WorkspaceAction::ViewLatestChangelog)
+                    .into_item(),
+            );
+        }
+
         items.extend([
-            MenuItemFields::new("What's new")
-                .with_on_select_action(WorkspaceAction::ViewLatestChangelog)
-                .into_item(),
             MenuItemFields::new("Settings")
                 .with_on_select_action(WorkspaceAction::ShowSettings)
                 .into_item(),
@@ -14892,6 +14942,10 @@ impl Workspace {
     }
 
     fn handle_changelog_event(&mut self, event: &ChangelogEvent, ctx: &mut ViewContext<Self>) {
+        if !resource_center_main_page_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         // For certain contexts, like shared sessions, we do not want to force open the side panel
         // or display the reward modal.
         if !ContextFlag::ForceSidePanelOpen.is_enabled() {
@@ -21350,7 +21404,10 @@ impl Workspace {
             );
         } else {
             let resource_center_closed = !self.current_workspace_state.is_resource_center_open;
-            if resource_center_closed && ContextFlag::WarpEssentials.is_enabled() {
+            if resource_center_closed
+                && !ChannelState::is_terminal_only()
+                && ContextFlag::WarpEssentials.is_enabled()
+            {
                 target.add_child(
                     Container::new(self.render_resource_center_button(appearance, ctx))
                         .with_margin_left(TAB_BAR_PADDING_LEFT)
@@ -23930,6 +23987,14 @@ impl TypedActionView for Workspace {
         let window_id = ctx.window_id();
 
         if ChannelState::is_terminal_only() && is_terminal_only_panel_action_disabled(action) {
+            return;
+        }
+
+        if !workspace_action_is_supported_for_profile(
+            action,
+            ChannelState::product_profile(),
+            self.current_workspace_state.is_resource_center_open,
+        ) {
             return;
         }
 

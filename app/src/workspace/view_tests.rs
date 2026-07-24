@@ -83,6 +83,7 @@ use crate::user_config::tab_configs_dir;
 use crate::util::traffic_lights::windows::RendererState;
 use crate::warp_managed_paths_watcher::WarpManagedPathsWatcher;
 use crate::workflows::local_workflows::LocalWorkflows;
+use crate::workspace::resource_center_main_page_is_supported_for_profile;
 use crate::workspaces::team_tester::TeamTesterStatus;
 use crate::workspaces::update_manager::TeamUpdateManager;
 use crate::workspaces::user_profiles::UserProfiles;
@@ -126,6 +127,52 @@ fn terminal_only_workspace_panel_eligibility_disables_tools_and_code_review() {
     ));
     assert!(!is_terminal_only_panel_action_disabled(
         &WorkspaceAction::ToggleRightPanel
+    ));
+}
+
+#[test]
+fn terminal_only_resource_center_policy_keeps_keybindings_and_allows_only_cleanup_toggle() {
+    assert!(resource_center_main_page_is_supported_for_profile(
+        ProductProfile::Full
+    ));
+    assert!(!resource_center_main_page_is_supported_for_profile(
+        ProductProfile::TerminalOnly
+    ));
+
+    for is_resource_center_open in [false, true] {
+        assert!(resource_center_toggle_is_allowed_for_profile(
+            ProductProfile::Full,
+            is_resource_center_open
+        ));
+    }
+    assert!(!resource_center_toggle_is_allowed_for_profile(
+        ProductProfile::TerminalOnly,
+        false
+    ));
+    assert!(resource_center_toggle_is_allowed_for_profile(
+        ProductProfile::TerminalOnly,
+        true
+    ));
+
+    assert!(workspace_action_is_supported_for_profile(
+        &WorkspaceAction::ViewLatestChangelog,
+        ProductProfile::Full,
+        false
+    ));
+    assert!(!workspace_action_is_supported_for_profile(
+        &WorkspaceAction::ViewLatestChangelog,
+        ProductProfile::TerminalOnly,
+        false
+    ));
+    assert!(!workspace_action_is_supported_for_profile(
+        &WorkspaceAction::ToggleResourceCenter,
+        ProductProfile::TerminalOnly,
+        false
+    ));
+    assert!(workspace_action_is_supported_for_profile(
+        &WorkspaceAction::ToggleResourceCenter,
+        ProductProfile::TerminalOnly,
+        true
     ));
 }
 

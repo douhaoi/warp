@@ -45,7 +45,7 @@ use warpui::elements::DropTargetData;
 use warpui::keymap::{BindingDescription, EditableBinding, FixedBinding};
 
 use crate::ai::blocklist::NEW_AGENT_PANE_LABEL;
-use crate::channel::{Channel, ChannelState};
+use crate::channel::{Channel, ChannelState, ProductProfile};
 use crate::features::FeatureFlag;
 use crate::palette::PaletteMode;
 use crate::server::telemetry::{AgentModeEntrypoint, PaletteSource};
@@ -73,6 +73,12 @@ use crate::workspace::view::{
     TOGGLE_TAB_CONFIGS_MENU_BINDING_NAME, TOGGLE_VERTICAL_TABS_PANEL_BINDING_NAME,
     TOGGLE_WARP_DRIVE_BINDING_NAME,
 };
+
+pub(crate) fn resource_center_main_page_is_supported_for_profile(
+    product_profile: ProductProfile,
+) -> bool {
+    product_profile == ProductProfile::Full
+}
 
 pub fn init(app: &mut AppContext) {
     app.add_singleton_model(|_| WorkspaceRegistry::new());
@@ -1212,7 +1218,7 @@ pub fn init(app: &mut AppContext) {
     .with_group(bindings::BindingGroup::Settings.as_str())
     .with_context_predicate(id!("Workspace") & !id!("IsAnonymousUser"))]);
 
-    if !FeatureFlag::AvatarInTabBar.is_enabled() {
+    if !ChannelState::is_terminal_only() && !FeatureFlag::AvatarInTabBar.is_enabled() {
         app.register_editable_bindings([EditableBinding::new(
             "workspace:toggle_resource_center",
             "Toggle resource center",
@@ -1272,7 +1278,9 @@ pub fn init(app: &mut AppContext) {
         }
     }
 
-    if FeatureFlag::Changelog.is_enabled() {
+    if FeatureFlag::Changelog.is_enabled()
+        && resource_center_main_page_is_supported_for_profile(ChannelState::product_profile())
+    {
         app.register_editable_bindings([
             // Always show the "View latest changelog" action in the command palette,
             // but without a keybinding when the update toast is not visible.

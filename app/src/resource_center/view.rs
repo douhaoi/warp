@@ -1,4 +1,5 @@
 use vec1::{Vec1, vec1};
+use warp_core::channel::{ChannelState, ProductProfile};
 use warp_core::features::FeatureFlag;
 use warp_core::ui::builder::AnimatedButtonOptions;
 use warpui::elements::{
@@ -66,6 +67,17 @@ pub enum ResourceCenterPage {
     Keybindings,
 }
 
+fn resource_center_page_is_supported_for_profile(
+    page: ResourceCenterPage,
+    product_profile: ProductProfile,
+) -> bool {
+    product_profile == ProductProfile::Full || page == ResourceCenterPage::Keybindings
+}
+
+fn resource_center_footer_is_supported_for_profile(product_profile: ProductProfile) -> bool {
+    product_profile == ProductProfile::Full
+}
+
 #[derive(Clone)]
 pub struct ResourceCenterPageView {
     pub page: ResourceCenterPage,
@@ -115,14 +127,6 @@ impl ResourceCenterView {
         tips_completed: ModelHandle<TipsCompleted>,
         changelog_model_handle: ModelHandle<ChangelogModel>,
     ) -> Self {
-        let main_view = ResourceCenterPageView {
-            page: ResourceCenterPage::Main,
-            page_view_handle: ResourceCenterViewHandle::Main(Self::build_main_view(
-                ctx,
-                tips_completed,
-                changelog_model_handle,
-            )),
-        };
         let keybindings_view = ResourceCenterPageView {
             page: ResourceCenterPage::Keybindings,
             page_view_handle: ResourceCenterViewHandle::Keybindings(Self::build_keybindings_view(
@@ -139,7 +143,22 @@ impl ResourceCenterView {
             }
         });
 
-        let page_views = vec1![main_view, keybindings_view];
+        let page_views = if resource_center_page_is_supported_for_profile(
+            ResourceCenterPage::Main,
+            ChannelState::product_profile(),
+        ) {
+            let main_view = ResourceCenterPageView {
+                page: ResourceCenterPage::Main,
+                page_view_handle: ResourceCenterViewHandle::Main(Self::build_main_view(
+                    ctx,
+                    tips_completed,
+                    changelog_model_handle,
+                )),
+            };
+            vec1![main_view, keybindings_view]
+        } else {
+            vec1![keybindings_view]
+        };
 
         Self {
             button_mouse_states: Default::default(),
@@ -216,6 +235,11 @@ impl ResourceCenterView {
     }
 
     pub fn set_current_page(&mut self, new_page: ResourceCenterPage, ctx: &mut ViewContext<Self>) {
+        if !resource_center_page_is_supported_for_profile(new_page, ChannelState::product_profile())
+        {
+            return;
+        }
+
         let position = self
             .page_views
             .iter()
@@ -363,9 +387,15 @@ impl ResourceCenterView {
         // Render header items based on page
         let close_button = self.render_close_button(appearance);
         match current_page {
-            Some(ResourceCenterPage::Keybindings) => {
+            Some(ResourceCenterPage::Keybindings)
+                if resource_center_page_is_supported_for_profile(
+                    ResourceCenterPage::Main,
+                    ChannelState::product_profile(),
+                ) =>
+            {
                 vec![self.render_back_button(appearance), title, close_button]
             }
+            Some(ResourceCenterPage::Keybindings) => vec![title, close_button],
             _ => {
                 vec![title, self.render_keyboard_button(appearance), close_button]
             }
@@ -480,8 +510,22 @@ impl TypedActionView for ResourceCenterView {
         use ResourceCenterAction::*;
         match action {
             Close => self.close(ctx),
-            NavigatePage(new_page) => self.set_current_page(*new_page, ctx),
-            FooterItemClick(item) => self.footer_item_click_action(item, ctx),
+            NavigatePage(new_page)
+                if resource_center_page_is_supported_for_profile(
+                    *new_page,
+                    ChannelState::product_profile(),
+                ) =>
+            {
+                self.set_current_page(*new_page, ctx)
+            }
+            FooterItemClick(item)
+                if resource_center_footer_is_supported_for_profile(
+                    ChannelState::product_profile(),
+                ) =>
+            {
+                self.footer_item_click_action(item, ctx)
+            }
+            NavigatePage(_) | FooterItemClick(_) => {}
         }
     }
 }
@@ -500,7 +544,6 @@ impl View for ResourceCenterView {
     fn render(&self, app: &AppContext) -> Box<dyn Element> {
         let appearance = Appearance::as_ref(app);
         let header = self.render_header(appearance, app);
-        let footer = self.render_footer(appearance);
         let resource_center_page = &self.page_views[self.current_view_index].page_view_handle;
 
         let body = match &resource_center_page {
@@ -512,10 +555,38 @@ impl View for ResourceCenterView {
             }
         };
 
-        Flex::column()
+        let content = Flex::column()
             .with_child(header)
-            .with_child(Shrinkable::new(1., body).finish())
-            .with_child(footer)
-            .finish()
+            .with_child(Shrinkable::new(1., body).finish());
+
+        if resource_center_footer_is_supported_for_profile(ChannelState::product_profile()) {
+            content.with_child(self.render_footer(appearance)).finish()
+        } else {
+            content.finish()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resource_center_page_policy_preserves_full_and_keeps_only_keybindings_in_terminal_only() {
+        for page in [ResourceCenterPage::Main, ResourceCenterPage::Keybindings] {
+            assert!(resource_center_page_is_supported_for_profile(
+                page,
+                ProductProfile::Full
+            ));
+        }
+
+        assert!(!resource_center_page_is_supported_for_profile(
+            ResourceCenterPage::Main,
+            ProductProfile::TerminalOnly
+        ));
+        assert!(resource_center_page_is_supported_for_profile(
+            ResourceCenterPage::Keybindings,
+            ProductProfile::TerminalOnly
+        ));
     }
 }
