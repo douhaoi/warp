@@ -42,6 +42,62 @@ use crate::test_util::terminal::initialize_app_for_terminal_view;
 use crate::{FeatureFlag, assert_lines_approx_eq};
 
 #[test]
+fn shared_session_starting_profile_eligibility_preserves_full_and_disables_terminal_only() {
+    assert!(can_start_shared_sessions_for_profile(
+        crate::channel::ProductProfile::Full
+    ));
+    assert!(!can_start_shared_sessions_for_profile(
+        crate::channel::ProductProfile::TerminalOnly
+    ));
+}
+
+#[test]
+fn terminal_only_shared_session_menu_preserves_stop_cleanup() {
+    App::test((), |mut app| async move {
+        initialize_app_for_terminal_view(&mut app);
+        let terminal = add_window_with_terminal(&mut app, None);
+
+        terminal.update(&mut app, |view, _| {
+            view.model
+                .lock()
+                .set_shared_session_status(SharedSessionStatus::ActiveSharer);
+        });
+
+        terminal.read(&app, |view, _| {
+            let model = view.model.lock();
+            let items = session_sharing_context_menu_items_for_profile(
+                crate::channel::ProductProfile::TerminalOnly,
+                &model,
+                false,
+            );
+            assert_eq!(items.len(), 1);
+            assert!(matches!(
+                items[0].item_on_select_action(),
+                Some(TerminalAction::ContextMenu(ContextMenuAction::StopSharing))
+            ));
+        });
+
+        terminal.update(&mut app, |view, _| {
+            view.model
+                .lock()
+                .set_shared_session_status(SharedSessionStatus::NotShared);
+        });
+
+        terminal.read(&app, |view, _| {
+            let model = view.model.lock();
+            assert!(
+                session_sharing_context_menu_items_for_profile(
+                    crate::channel::ProductProfile::TerminalOnly,
+                    &model,
+                    false,
+                )
+                .is_empty()
+            );
+        });
+    });
+}
+
+#[test]
 fn test_prompt_context_menu_items_shared_session_viewer_no_edit_prompt() {
     App::test((), |mut app| async move {
         let terminal = terminal_view_for_viewer(&mut app);

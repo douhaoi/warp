@@ -35,6 +35,7 @@ use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::ambient_agents::AmbientAgentTaskId;
 use crate::ai::blocklist::BlocklistAIHistoryModel;
 use crate::auth::UserUid;
+use crate::channel::{ChannelState, ProductProfile};
 use crate::context_chips::ContextChipKind;
 use crate::drive::sharing::ShareableObject;
 use crate::editor::{InteractionState, ReplicaId};
@@ -69,6 +70,48 @@ use crate::terminal::view::{
 };
 use crate::view_components::{DismissibleToast, ToastFlavor};
 use crate::{TelemetryEvent, send_telemetry_from_ctx};
+
+fn can_start_shared_sessions_for_profile(product_profile: ProductProfile) -> bool {
+    product_profile == ProductProfile::Full
+}
+
+fn session_sharing_context_menu_items_for_profile(
+    product_profile: ProductProfile,
+    model: &TerminalModel,
+    is_share_session_disabled: bool,
+) -> Vec<MenuItem<TerminalAction>> {
+    let mut items = Vec::new();
+    let can_start_shared_sessions = can_start_shared_sessions_for_profile(product_profile);
+
+    if can_start_shared_sessions && !model.shared_session_status().is_sharer_or_viewer() {
+        items.push(
+            MenuItemFields::new("Share session...")
+                .with_on_select_action(TerminalAction::ContextMenu(
+                    ContextMenuAction::OpenShareSessionModal,
+                ))
+                .with_disabled(is_share_session_disabled)
+                .into_item(),
+        );
+    } else if model.shared_session_status().is_active_sharer() {
+        items.push(
+            MenuItemFields::new("Stop sharing")
+                .with_on_select_action(TerminalAction::ContextMenu(ContextMenuAction::StopSharing))
+                .into_item(),
+        );
+    }
+
+    if can_start_shared_sessions && model.shared_session_status().is_sharer_or_viewer() {
+        items.push(
+            MenuItemFields::new("Copy session sharing link")
+                .with_on_select_action(TerminalAction::CopySharedSessionLink {
+                    source: SharedSessionActionSource::RightClickMenu,
+                })
+                .into_item(),
+        );
+    }
+
+    items
+}
 
 impl TerminalView {
     pub fn sharer_session_kind(&self) -> Option<&Kind> {
@@ -499,6 +542,10 @@ impl TerminalView {
         open_source: SharedSessionActionSource,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !can_start_shared_sessions_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         if !matches!(
             open_source,
             SharedSessionActionSource::BlocklistContextMenu { .. }
@@ -551,6 +598,10 @@ impl TerminalView {
         bypass_conversation_guard: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !can_start_shared_sessions_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         // We should only be attempting to share a session
         // if it is bootstrapped.
         //
@@ -1906,38 +1957,11 @@ impl TerminalView {
         model: &TerminalModel,
         is_share_session_disabled: bool,
     ) -> Vec<MenuItem<TerminalAction>> {
-        let mut items = Vec::new();
-
-        if !model.shared_session_status().is_sharer_or_viewer() {
-            items.push(
-                MenuItemFields::new("Share session...")
-                    .with_on_select_action(TerminalAction::ContextMenu(
-                        ContextMenuAction::OpenShareSessionModal,
-                    ))
-                    .with_disabled(is_share_session_disabled)
-                    .into_item(),
-            );
-        } else if model.shared_session_status().is_active_sharer() {
-            items.push(
-                MenuItemFields::new("Stop sharing")
-                    .with_on_select_action(TerminalAction::ContextMenu(
-                        ContextMenuAction::StopSharing,
-                    ))
-                    .into_item(),
-            );
-        }
-
-        if model.shared_session_status().is_sharer_or_viewer() {
-            items.push(
-                MenuItemFields::new("Copy session sharing link")
-                    .with_on_select_action(TerminalAction::CopySharedSessionLink {
-                        source: SharedSessionActionSource::RightClickMenu,
-                    })
-                    .into_item(),
-            );
-        }
-
-        items
+        session_sharing_context_menu_items_for_profile(
+            ChannelState::product_profile(),
+            model,
+            is_share_session_disabled,
+        )
     }
 
     /// Resizes the terminal from when the sharer updates size.

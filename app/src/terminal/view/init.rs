@@ -444,6 +444,7 @@ pub fn init(app: &mut AppContext) {
             "Toggle team workflows modal",
             TerminalAction::OpenWorkflowModal,
         )
+        .with_enabled(|| !ChannelState::is_terminal_only())
         .with_key_binding(cmd_or_ctrl_shift("s"))
         .with_context_predicate(
             id!("Terminal")
@@ -564,6 +565,7 @@ pub fn init(app: &mut AppContext) {
             "Share selected block",
             TerminalAction::OpenShareModal,
         )
+        .with_enabled(|| !ChannelState::is_terminal_only())
         .with_custom_action(CustomAction::CreateBlockPermalink)
         .with_context_predicate(
             id!("Terminal") & eq!("TerminalView_BlockSelectionCardinality", "One"),
@@ -756,7 +758,7 @@ pub fn init(app: &mut AppContext) {
                 ),
             TerminalAction::ContextMenu(ContextMenuAction::AskAI(AskAISource::SelectedBlocks)),
         )
-        .with_enabled(|| FeatureFlag::AgentMode.is_enabled())
+        .with_enabled(|| FeatureFlag::AgentMode.is_enabled() && !ChannelState::is_terminal_only())
         .with_custom_action(CustomAction::AttachSelectionAsAgentModeContext)
         .with_group(bindings::BindingGroup::WarpAi.as_str())
         // When possible, prioritize the text selection action over attaching a block as
@@ -779,7 +781,7 @@ pub fn init(app: &mut AppContext) {
                 AskAISource::SelectedTerminalText,
             )),
         )
-        .with_enabled(|| FeatureFlag::AgentMode.is_enabled())
+        .with_enabled(|| FeatureFlag::AgentMode.is_enabled() && !ChannelState::is_terminal_only())
         .with_custom_action(CustomAction::AttachSelectionAsAgentModeContext)
         .with_group(bindings::BindingGroup::WarpAi.as_str())
         .with_context_predicate(
@@ -796,7 +798,7 @@ pub fn init(app: &mut AppContext) {
             "Ask Warp AI about Selection",
             TerminalAction::ContextMenu(ContextMenuAction::AskAI(AskAISource::SelectedBlockOrText)),
         )
-        .with_enabled(|| !FeatureFlag::AgentMode.is_enabled())
+        .with_enabled(|| !FeatureFlag::AgentMode.is_enabled() && !ChannelState::is_terminal_only())
         .with_custom_action(CustomAction::AttachSelectionAsAgentModeContext)
         .with_group(bindings::BindingGroup::WarpAi.as_str())
         .with_context_predicate(
@@ -814,7 +816,7 @@ pub fn init(app: &mut AppContext) {
             "Ask Warp AI about last block",
             TerminalAction::ContextMenu(ContextMenuAction::AskAI(AskAISource::LastBlock)),
         )
-        .with_enabled(|| !FeatureFlag::AgentMode.is_enabled())
+        .with_enabled(|| !FeatureFlag::AgentMode.is_enabled() && !ChannelState::is_terminal_only())
         .with_key_binding("ctrl-shift->")
         .with_group(bindings::BindingGroup::WarpAi.as_str())
         .with_context_predicate(
@@ -825,7 +827,7 @@ pub fn init(app: &mut AppContext) {
             "Ask Warp AI",
             TerminalAction::ContextMenu(ContextMenuAction::AskAI(AskAISource::SelectedInputText)),
         )
-        .with_enabled(|| !FeatureFlag::AgentMode.is_enabled())
+        .with_enabled(|| !FeatureFlag::AgentMode.is_enabled() && !ChannelState::is_terminal_only())
         .with_group(bindings::BindingGroup::WarpAi.as_str())
         .with_key_binding("ctrl-shift-space")
         .with_context_predicate(id!("Input") & id!(flags::IS_ANY_AI_ENABLED)),
@@ -941,6 +943,7 @@ pub fn init(app: &mut AppContext) {
         .with_enabled(|| {
             FeatureFlag::CreatingSharedSessions.is_enabled()
                 && ContextFlag::CreateSharedSession.is_enabled()
+                && !ChannelState::is_terminal_only()
         }),
         EditableBinding::new(
             "terminal:stop_sharing_current_session",

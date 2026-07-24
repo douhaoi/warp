@@ -1540,6 +1540,52 @@ impl fmt::Debug for InputContextMenuAction {
     }
 }
 
+fn is_terminal_only_context_menu_action_disabled(action: &ContextMenuAction) -> bool {
+    matches!(
+        action,
+        ContextMenuAction::AskAI(_)
+            | ContextMenuAction::OpenWorkflowModal
+            | ContextMenuAction::OpenShareBlockModal { .. }
+            | ContextMenuAction::OpenShareSessionModal
+            | ContextMenuAction::CopyConversationShareLink { .. }
+            | ContextMenuAction::OpenConversationShareDialog { .. }
+            | ContextMenuAction::SavePromptAsAgentModeWorkflow { .. }
+    )
+}
+
+fn is_terminal_only_input_context_menu_action_disabled(action: &InputContextMenuAction) -> bool {
+    matches!(
+        action,
+        InputContextMenuAction::AskWarpAI
+            | InputContextMenuAction::ShowAICommandSearch
+            | InputContextMenuAction::SaveAsWorkflow
+    )
+}
+
+fn is_terminal_only_action_disabled(action: &TerminalAction) -> bool {
+    match action {
+        TerminalAction::ContextMenu(action) => {
+            is_terminal_only_context_menu_action_disabled(action)
+        }
+        TerminalAction::InputContextMenuItem(action) => {
+            is_terminal_only_input_context_menu_action_disabled(action)
+        }
+        TerminalAction::OpenShareModal
+        | TerminalAction::OpenWorkflowModal
+        | TerminalAction::OpenWorkflowModalForAIWorkflow(_)
+        | TerminalAction::OpenWorkflowModalForBlock(_)
+        | TerminalAction::OpenWorkflowModalWithCloudWorkflow(_)
+        | TerminalAction::AskAIAssistant { .. }
+        | TerminalAction::OpenShareSessionModal { .. }
+        | TerminalAction::CopySharedSessionLink { .. }
+        | TerminalAction::OpenSharedSessionViewerRoleMenu
+        | TerminalAction::MakeAllParticipantsReaders { .. }
+        | TerminalAction::RequestSharedSessionRole(_)
+        | TerminalAction::OpenSharedSessionOnDesktop { .. } => true,
+        _ => false,
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum PromptPosition {
     Block(BlockIndex),
@@ -16458,6 +16504,7 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> Vec<MenuItem<TerminalAction>> {
         let model = self.model.lock();
+        let is_terminal_only = ChannelState::is_terminal_only();
 
         let mut items = match (
             menu_source,
@@ -16574,7 +16621,7 @@ impl TerminalView {
                         ))
                         .into_item(),
                 ];
-                if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
+                if !is_terminal_only && AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
                     fields.extend([
                         MenuItem::Separator,
                         MenuItemFields::new(if FeatureFlag::AgentMode.is_enabled() {
@@ -16685,22 +16732,28 @@ impl TerminalView {
                         ))
                         .with_disabled(is_copy_commands_disabled)
                         .into_item(),
-                    MenuItemFields::new(share_block_label)
-                        .with_on_select_action(TerminalAction::ContextMenu(
-                            ContextMenuAction::OpenShareBlockModal {
-                                block_index: tail_block_index,
-                            },
-                        ))
-                        .with_key_shortcut_label(keybinding_name_to_display_string(
-                            "terminal:open_share_block_modal",
-                            ctx,
-                        ))
-                        .with_disabled(is_share_disabled)
-                        .into_item(),
                 ];
 
-                if FeatureFlag::CreatingSharedSessions.is_enabled()
-                    && ContextFlag::CreateSharedSession.is_enabled()
+                if !is_terminal_only {
+                    items.push(
+                        MenuItemFields::new(share_block_label)
+                            .with_on_select_action(TerminalAction::ContextMenu(
+                                ContextMenuAction::OpenShareBlockModal {
+                                    block_index: tail_block_index,
+                                },
+                            ))
+                            .with_key_shortcut_label(keybinding_name_to_display_string(
+                                "terminal:open_share_block_modal",
+                                ctx,
+                            ))
+                            .with_disabled(is_share_disabled)
+                            .into_item(),
+                    );
+                }
+
+                if is_terminal_only
+                    || (FeatureFlag::CreatingSharedSessions.is_enabled()
+                        && ContextFlag::CreateSharedSession.is_enabled())
                 {
                     // Sharing a session from a context menu is disabled for multi block selections, restored blocks, and viewers.
                     let is_share_session_disabled = !is_single_selection
@@ -16714,7 +16767,7 @@ impl TerminalView {
                     );
                 }
 
-                if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+                if !is_terminal_only && WarpDriveSettings::is_warp_drive_enabled(ctx) {
                     items.push(MenuItem::Separator);
                     items.push(
                         MenuItemFields::new("Save as workflow")
@@ -16729,7 +16782,7 @@ impl TerminalView {
                     );
                 }
 
-                if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
+                if !is_terminal_only && AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
                     if FeatureFlag::AgentMode.is_enabled() {
                         // We can only attach selected blocks if the input box is visible.
                         if self.is_input_box_visible(&model, ctx) {
@@ -16916,8 +16969,9 @@ impl TerminalView {
                 // If selection is empty, only show non-block related options
                 let mut items = Vec::new();
 
-                if FeatureFlag::CreatingSharedSessions.is_enabled()
-                    && ContextFlag::CreateSharedSession.is_enabled()
+                if is_terminal_only
+                    || (FeatureFlag::CreatingSharedSessions.is_enabled()
+                        && ContextFlag::CreateSharedSession.is_enabled())
                 {
                     items.extend(self.session_sharing_context_menu_items(&model, false));
                 }
@@ -17330,6 +17384,7 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) -> Vec<MenuItem<TerminalAction>> {
         let model = self.model.lock();
+        let is_terminal_only = ChannelState::is_terminal_only();
         let mut items = Vec::new();
 
         // Input editor is not available for read-only viewers in a shared session,
@@ -17387,8 +17442,9 @@ impl TerminalView {
                 .into_item(),
         );
 
-        if FeatureFlag::CreatingSharedSessions.is_enabled()
-            && ContextFlag::CreateSharedSession.is_enabled()
+        if is_terminal_only
+            || (FeatureFlag::CreatingSharedSessions.is_enabled()
+                && ContextFlag::CreateSharedSession.is_enabled())
         {
             items.extend(self.session_sharing_context_menu_items(&model, false));
         }
@@ -17408,7 +17464,7 @@ impl TerminalView {
                 .into_item(),
         ]);
 
-        if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
+        if !is_terminal_only && AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
             items.push(
                 MenuItemFields::new("AI command search")
                     .with_on_select_action(TerminalAction::InputContextMenuItem(
@@ -17434,7 +17490,10 @@ impl TerminalView {
         }
 
         // Section 3: Teams related
-        if !all_current_input_text.is_empty() && WarpDriveSettings::is_warp_drive_enabled(ctx) {
+        if !is_terminal_only
+            && !all_current_input_text.is_empty()
+            && WarpDriveSettings::is_warp_drive_enabled(ctx)
+        {
             items.extend([
                 MenuItem::Separator,
                 MenuItemFields::new("Save as workflow")
@@ -17488,6 +17547,10 @@ impl TerminalView {
     }
 
     fn open_workflow_modal(&mut self, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         let selected_block_contents =
             self.selected_block_contents_as_string(BlockEntity::Command, " &&\n", ctx);
 
@@ -17608,7 +17671,7 @@ impl TerminalView {
                     .with_key_shortcut_label(Some("⌘-C"))
                     .into_item(),
             );
-            if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
+            if !ChannelState::is_terminal_only() && AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
                 menu_items.extend([
                     MenuItem::Separator,
                     MenuItemFields::new(if FeatureFlag::AgentMode.is_enabled() {
@@ -17625,8 +17688,9 @@ impl TerminalView {
             }
         }
 
-        if FeatureFlag::CreatingSharedSessions.is_enabled()
-            && ContextFlag::CreateSharedSession.is_enabled()
+        if ChannelState::is_terminal_only()
+            || (FeatureFlag::CreatingSharedSessions.is_enabled()
+                && ContextFlag::CreateSharedSession.is_enabled())
         {
             menu_items.extend(self.session_sharing_context_menu_items(&model, false));
         }
@@ -19111,6 +19175,10 @@ impl TerminalView {
     }
 
     fn ai_command_search_from_input(&mut self, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         self.input.update(ctx, |input, ctx| {
             input.handle_action(&InputAction::ShowAiCommandSearch, ctx)
         });
@@ -19118,6 +19186,10 @@ impl TerminalView {
     }
 
     fn save_as_workflow_from_input(&mut self, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         let (all_current_input_text, selected_input_text) = self.input.read(ctx, |input, ctx| {
             input.editor().read(ctx, |editor, ctx| {
                 (editor.buffer_text(ctx), editor.selected_text(ctx))
@@ -19156,6 +19228,10 @@ impl TerminalView {
         source: SaveAsWorkflowModalSource,
         ctx: &mut ViewContext<Self>,
     ) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         ctx.emit(Event::OpenWorkflowModalWithCommand(command));
 
         send_telemetry_from_ctx!(TelemetryEvent::SaveAsWorkflowModal { source }, ctx);
@@ -19241,6 +19317,10 @@ impl TerminalView {
     /// Handle AI entrypoints, routing to AI in blocklist when possible and falling back to the AI
     /// Assistant panel.
     fn ask_ai(&mut self, ask_source: &AskAISource, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         let semantic_selection = SemanticSelection::as_ref(ctx);
         let selection_string = self.model.lock().selection_to_string(
             semantic_selection,
@@ -20867,6 +20947,10 @@ impl TerminalView {
         block_index: BlockIndex,
         ctx: &mut ViewContext<Self>,
     ) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         if AuthStateProvider::as_ref(ctx)
             .get()
             .is_anonymous_or_logged_out()
@@ -21668,9 +21752,17 @@ impl TerminalView {
                 ctx.emit(Event::OpenPluginInstructionsPane(*agent, *kind));
             }
             InputEvent::OpenShareSessionModal => {
+                if ChannelState::is_terminal_only() {
+                    return;
+                }
+
                 self.open_share_session_modal(SharedSessionActionSource::FooterChip, ctx);
             }
             InputEvent::StartRemoteControl => {
+                if ChannelState::is_terminal_only() {
+                    return;
+                }
+
                 let source = SharedSessionSource::user(
                     self.active_conversation_task_id(ctx).map(|t| t.to_string()),
                 );
@@ -24527,6 +24619,12 @@ impl TerminalView {
     fn context_menu_action(&mut self, action: &ContextMenuAction, ctx: &mut ViewContext<Self>) {
         use ContextMenuAction::*;
 
+        if ChannelState::is_terminal_only() && is_terminal_only_context_menu_action_disabled(action)
+        {
+            self.close_context_menu(ctx, false);
+            return;
+        }
+
         // TODO: handle sharing session with > 1 block selected
         let source = SharedSessionActionSource::BlocklistContextMenu {
             block_index: self.selected_blocks.tail(),
@@ -24900,6 +24998,13 @@ impl TerminalView {
         ctx: &mut ViewContext<Self>,
     ) {
         use InputContextMenuAction::*;
+
+        if ChannelState::is_terminal_only()
+            && is_terminal_only_input_context_menu_action_disabled(action)
+        {
+            self.close_context_menu(ctx, false);
+            return;
+        }
 
         match action {
             CutSelectedText => self.cut_selected_text_from_input(ctx),
@@ -26281,6 +26386,16 @@ impl TypedActionView for TerminalView {
     }
 
     fn handle_action(&mut self, action: &TerminalAction, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only() && is_terminal_only_action_disabled(action) {
+            if matches!(
+                action,
+                TerminalAction::ContextMenu(_) | TerminalAction::InputContextMenuItem(_)
+            ) {
+                self.close_context_menu(ctx, false);
+            }
+            return;
+        }
+
         use TerminalAction::*;
         let input_mode = *InputModeSettings::as_ref(ctx).input_mode.value();
 

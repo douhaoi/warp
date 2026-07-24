@@ -155,6 +155,16 @@ fn image_attachment_profile_eligibility_preserves_cli_agent_rich_input() {
 }
 
 #[test]
+fn ai_command_search_profile_eligibility_preserves_full_and_disables_terminal_only() {
+    assert!(can_show_ai_command_search_for_profile(
+        crate::channel::ProductProfile::Full
+    ));
+    assert!(!can_show_ai_command_search_for_profile(
+        crate::channel::ProductProfile::TerminalOnly
+    ));
+}
+
+#[test]
 fn renders_git_checkout_prompt_chip_command_as_single_shell_argument() {
     let command = PromptChipShellCommand::GitCheckout {
         branch_name: "poc;id>/tmp/proof $(whoami) `id` | cat 'tail'".to_string(),

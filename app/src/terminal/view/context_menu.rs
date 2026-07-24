@@ -118,37 +118,39 @@ impl TerminalView {
                     .into_item(),
             );
         }
-        items.push(MenuItem::Separator);
-        items.push(
-            MenuItemFields::new("Save as prompt")
-                .with_on_select_action(TerminalAction::ContextMenu(
-                    ContextMenuAction::SavePromptAsAgentModeWorkflow { ai_block_view_id },
-                ))
-                .into_item(),
-        );
-        items.push(MenuItem::Separator);
+        if !ChannelState::is_terminal_only() {
+            items.push(MenuItem::Separator);
+            items.push(
+                MenuItemFields::new("Save as prompt")
+                    .with_on_select_action(TerminalAction::ContextMenu(
+                        ContextMenuAction::SavePromptAsAgentModeWorkflow { ai_block_view_id },
+                    ))
+                    .into_item(),
+            );
+            items.push(MenuItem::Separator);
 
-        if FeatureFlag::CloudConversations.is_enabled() {
-            let history_model = BlocklistAIHistoryModel::as_ref(ctx);
-            if history_model.can_conversation_be_shared(&ai_conversation_id) {
-                items.push(
-                    MenuItemFields::new("Copy share link")
-                        .with_on_select_action(TerminalAction::ContextMenu(
-                            ContextMenuAction::CopyConversationShareLink {
-                                conversation_id: ai_conversation_id,
-                            },
-                        ))
-                        .into_item(),
-                );
-                items.push(
-                    MenuItemFields::new("Share conversation")
-                        .with_on_select_action(TerminalAction::ContextMenu(
-                            ContextMenuAction::OpenConversationShareDialog {
-                                conversation_id: ai_conversation_id,
-                            },
-                        ))
-                        .into_item(),
-                );
+            if FeatureFlag::CloudConversations.is_enabled() {
+                let history_model = BlocklistAIHistoryModel::as_ref(ctx);
+                if history_model.can_conversation_be_shared(&ai_conversation_id) {
+                    items.push(
+                        MenuItemFields::new("Copy share link")
+                            .with_on_select_action(TerminalAction::ContextMenu(
+                                ContextMenuAction::CopyConversationShareLink {
+                                    conversation_id: ai_conversation_id,
+                                },
+                            ))
+                            .into_item(),
+                    );
+                    items.push(
+                        MenuItemFields::new("Share conversation")
+                            .with_on_select_action(TerminalAction::ContextMenu(
+                                ContextMenuAction::OpenConversationShareDialog {
+                                    conversation_id: ai_conversation_id,
+                                },
+                            ))
+                            .into_item(),
+                    );
+                }
             }
         }
 

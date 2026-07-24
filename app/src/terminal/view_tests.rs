@@ -8200,3 +8200,69 @@ fn copy_does_not_forward_on_normal_screen() {
         );
     })
 }
+
+#[test]
+fn terminal_only_context_menu_feature_entrypoints_are_fail_closed() {
+    assert!(is_terminal_only_context_menu_action_disabled(
+        &ContextMenuAction::AskAI(AskAISource::LastBlock)
+    ));
+    assert!(is_terminal_only_context_menu_action_disabled(
+        &ContextMenuAction::OpenWorkflowModal
+    ));
+    assert!(is_terminal_only_context_menu_action_disabled(
+        &ContextMenuAction::OpenShareSessionModal
+    ));
+    assert!(is_terminal_only_context_menu_action_disabled(
+        &ContextMenuAction::OpenConversationShareDialog {
+            conversation_id: AIConversationId::new(),
+        }
+    ));
+    assert!(is_terminal_only_context_menu_action_disabled(
+        &ContextMenuAction::SavePromptAsAgentModeWorkflow {
+            ai_block_view_id: EntityId::new(),
+        }
+    ));
+    assert!(!is_terminal_only_context_menu_action_disabled(
+        &ContextMenuAction::StopSharing
+    ));
+    assert!(!is_terminal_only_context_menu_action_disabled(
+        &ContextMenuAction::CopyBlocks
+    ));
+}
+
+#[test]
+fn terminal_only_input_context_menu_feature_entrypoints_are_fail_closed() {
+    assert!(is_terminal_only_input_context_menu_action_disabled(
+        &InputContextMenuAction::AskWarpAI
+    ));
+    assert!(is_terminal_only_input_context_menu_action_disabled(
+        &InputContextMenuAction::ShowAICommandSearch
+    ));
+    assert!(is_terminal_only_input_context_menu_action_disabled(
+        &InputContextMenuAction::SaveAsWorkflow
+    ));
+    assert!(!is_terminal_only_input_context_menu_action_disabled(
+        &InputContextMenuAction::ShowCommandSearch
+    ));
+}
+
+#[test]
+fn terminal_only_terminal_actions_disable_share_workflow_and_ai_entrypoints() {
+    assert!(is_terminal_only_action_disabled(
+        &TerminalAction::OpenShareModal
+    ));
+    assert!(is_terminal_only_action_disabled(
+        &TerminalAction::OpenWorkflowModal
+    ));
+    assert!(is_terminal_only_action_disabled(
+        &TerminalAction::AskAIAssistant {
+            block_index: BlockIndex::default(),
+        }
+    ));
+    assert!(!is_terminal_only_action_disabled(
+        &TerminalAction::StopSharingCurrentSession {
+            source: SharedSessionActionSource::CommandPalette,
+        }
+    ));
+    assert!(!is_terminal_only_action_disabled(&TerminalAction::Copy));
+}

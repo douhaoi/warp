@@ -517,6 +517,10 @@ fn can_attach_images_for_profile(
     product_profile == ProductProfile::Full || is_cli_agent_input_open
 }
 
+fn can_show_ai_command_search_for_profile(product_profile: ProductProfile) -> bool {
+    product_profile == ProductProfile::Full
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputPrefixMode {
     None,
@@ -2002,6 +2006,7 @@ pub fn init(app: &mut AppContext) {
             "Open AI Command Suggestions",
             InputAction::ShowAiCommandSearch,
         )
+        .with_enabled(|| can_show_ai_command_search_for_profile(ChannelState::product_profile()))
         .with_context_predicate(
             id!("Input")
                 & !id!(SharedSessionStatus::reader().as_keymap_context())
@@ -15834,6 +15839,10 @@ impl Input {
     /// inserting a leading #, which is the trigger when typed manually by the
     /// user).
     fn show_ai_command_search(&mut self, ctx: &mut ViewContext<Input>) {
+        if !can_show_ai_command_search_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         // Should not show ai command search for read-only viewers
         if self.model.lock().shared_session_status().is_reader() {
             return;
