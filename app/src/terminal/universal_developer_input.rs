@@ -39,6 +39,7 @@ use crate::ai::blocklist::{
 };
 use crate::ai::execution_profiles::profiles::AIExecutionProfilesModel;
 use crate::ai::llms::LLMPreferences;
+use crate::channel::{ChannelState, ProductProfile};
 use crate::cloud_object::model::generic_string_model::StringModel;
 use crate::network::NetworkStatus;
 #[cfg(not(target_family = "wasm"))]
@@ -271,6 +272,35 @@ impl From<&BlocklistAIInputModel> for InputToggleMode {
     }
 }
 
+fn universal_developer_input_toggle_options_and_default(
+    product_profile: ProductProfile,
+    input_config: InputConfig,
+    is_autodetection_enabled: bool,
+) -> (Vec<InputToggleMode>, InputToggleMode) {
+    if product_profile == ProductProfile::TerminalOnly {
+        return (vec![InputToggleMode::Terminal], InputToggleMode::Terminal);
+    }
+
+    let mut options = vec![InputToggleMode::Terminal, InputToggleMode::AgentMode];
+    let mut default_option = if input_config.is_locked {
+        match input_config.input_type {
+            InputType::Shell => InputToggleMode::Terminal,
+            InputType::AI => InputToggleMode::AgentMode,
+        }
+    } else {
+        InputToggleMode::AutoDetection
+    };
+
+    if is_autodetection_enabled {
+        options.push(InputToggleMode::AutoDetection);
+    } else if default_option == InputToggleMode::AutoDetection {
+        // Don't set the default to auto-detection if it's not enabled.
+        default_option = InputToggleMode::Terminal;
+    }
+
+    (options, default_option)
+}
+
 /// Denormalized state that is required to render UDI styles that isn't easily directly accessible
 /// because its owned by other views in other parts of the hierarchy and was never extracted to a
 /// Model.
@@ -436,15 +466,12 @@ impl UniversalDeveloperInputButtonBar {
         let ai_settings = AISettings::as_ref(ctx);
         let is_autodetection_enabled = ai_settings.is_ai_autodetection_enabled(ctx);
 
-        let mut options = vec![InputToggleMode::Terminal, InputToggleMode::AgentMode];
-
-        let mut default_option = input_model.as_ref(ctx).into();
-        if is_autodetection_enabled {
-            options.push(InputToggleMode::AutoDetection);
-        } else if default_option == InputToggleMode::AutoDetection {
-            // Don't set the default to auto-detection if it's not enabled.
-            default_option = InputToggleMode::Terminal;
-        }
+        let product_profile = ChannelState::product_profile();
+        let (options, default_option) = universal_developer_input_toggle_options_and_default(
+            product_profile,
+            input_model.as_ref(ctx).input_config(),
+            is_autodetection_enabled,
+        );
 
         let cached_ui_state = Rc::new(RefCell::new(CachedUIState {
             is_input_empty: true,
@@ -497,32 +524,29 @@ impl UniversalDeveloperInputButtonBar {
             ctx.notify();
         });
 
-        ctx.subscribe_to_model(&AISettings::handle(ctx), |me, ai_settings, event, ctx| {
-            // Re-render when AI settings change (like voice input enabled/disabled)
-            // Also update segmented control options when auto-detection setting changes
-            if let AISettingsChangedEvent::AIAutoDetectionEnabled { .. } = event {
-                let is_autodection_enabled =
-                    ai_settings.as_ref(ctx).is_ai_autodetection_enabled(ctx);
-                me.segmented_control.update(ctx, |segmented_control, ctx| {
-                    if is_autodection_enabled {
-                        segmented_control.update_options(
-                            vec![
-                                InputToggleMode::Terminal,
-                                InputToggleMode::AgentMode,
-                                InputToggleMode::AutoDetection,
-                            ],
-                            ctx,
-                        );
-                    } else {
-                        segmented_control.update_options(
-                            vec![InputToggleMode::Terminal, InputToggleMode::AgentMode],
-                            ctx,
-                        );
-                    }
-                });
-            }
-            ctx.notify();
-        });
+        ctx.subscribe_to_model(
+            &AISettings::handle(ctx),
+            move |me, ai_settings, event, ctx| {
+                // Re-render when AI settings change (like voice input enabled/disabled)
+                // Also update segmented control options when auto-detection setting changes
+                if let AISettingsChangedEvent::AIAutoDetectionEnabled { .. } = event {
+                    let is_autodection_enabled =
+                        ai_settings.as_ref(ctx).is_ai_autodetection_enabled(ctx);
+                    let (options, _) = universal_developer_input_toggle_options_and_default(
+                        product_profile,
+                        InputConfig {
+                            input_type: InputType::Shell,
+                            is_locked: true,
+                        },
+                        is_autodection_enabled,
+                    );
+                    me.segmented_control.update(ctx, |segmented_control, ctx| {
+                        segmented_control.update_options(options, ctx);
+                    });
+                }
+                ctx.notify();
+            },
+        );
 
         let prompt_alert = ctx.add_typed_action_view(PromptAlertView::new);
         ctx.subscribe_to_view(&prompt_alert, |_, _, event, ctx| {
@@ -578,7 +602,11 @@ impl UniversalDeveloperInputButtonBar {
             if !event.did_update_input_config() {
                 return;
             }
-            let input_mode = InputToggleMode::from(input_model.as_ref(ctx));
+            let (_, input_mode) = universal_developer_input_toggle_options_and_default(
+                product_profile,
+                input_model.as_ref(ctx).input_config(),
+                true,
+            );
             me.segmented_control.update(ctx, |control, ctx| {
                 control.set_selected_option(input_mode, ctx);
             });
@@ -1076,3 +1104,7 @@ fn tooltip_config(
         border_color: theme.outline().into_solid(),
     }
 }
+
+#[cfg(test)]
+#[path = "universal_developer_input_tests.rs"]
+mod tests;

@@ -4,6 +4,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::AppId;
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq, Serialize)]
+pub enum ProductProfile {
+    #[default]
+    Full,
+    TerminalOnly,
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ChannelConfig {
     /// The application ID for this channel.
@@ -25,6 +32,9 @@ pub struct ChannelConfig {
     pub crash_reporting_config: Option<CrashReportingConfig>,
     /// Configuration for statically-bundled MCP OAuth credentials.
     pub mcp_static_config: Option<McpStaticConfig>,
+    /// The product profile baked into this build.
+    #[serde(default)]
+    pub product_profile: ProductProfile,
 }
 
 /// Configuration for GCP Identity-Aware Proxy authentication, present only on staging builds.
@@ -169,3 +179,7 @@ pub struct McpOAuthLoopbackClientConfig {
     #[serde(default)]
     pub client_secret: Option<Cow<'static, str>>,
 }
+
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod tests;

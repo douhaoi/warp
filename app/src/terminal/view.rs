@@ -3457,8 +3457,18 @@ impl TerminalView {
                 ctx,
             );
 
+            if ChannelState::is_terminal_only() {
+                model.set_input_config(
+                    InputConfig {
+                        input_type: InputType::Shell,
+                        is_locked: true,
+                    },
+                    true,
+                    None,
+                    ctx,
+                );
             // If NLD is disabled, restore any input config that was saved.
-            if !model.is_autodetection_enabled_for_current_context(ctx)
+            } else if !model.is_autodetection_enabled_for_current_context(ctx)
                 && let Some(input_config) = initial_input_config
             {
                 let is_input_buffer_empty = true;
@@ -26700,6 +26710,10 @@ impl TypedActionView for TerminalView {
                 self.drag_and_drop_files(paths, ctx);
             }
             SetInputModeAgent => {
+                if ChannelState::is_terminal_only() {
+                    return;
+                }
+
                 // Guard: when a CLI agent session is active, block mode
                 // toggling and LRC subagent invocation. Context predicates
                 // handle the Terminal-level case, but when the editor child

@@ -4,7 +4,9 @@
 
 use anyhow::Result;
 use warp_core::AppId;
-use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpServerConfig};
+use warp_core::channel::{
+    Channel, ChannelConfig, ChannelState, OzConfig, ProductProfile, WarpServerConfig,
+};
 
 // Simple wrapper around warp::run() for Warp OSS builds.
 fn main() -> Result<()> {
@@ -19,6 +21,11 @@ fn main() -> Result<()> {
             crash_reporting_config: None,
             autoupdate_config: None,
             mcp_static_config: None,
+            product_profile: if cfg!(feature = "terminal_only") {
+                ProductProfile::TerminalOnly
+            } else {
+                ProductProfile::Full
+            },
         },
     );
     if cfg!(debug_assertions) {

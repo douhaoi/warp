@@ -558,7 +558,7 @@ impl LaunchMode {
     /// processes (daemon, CLI, proxy, TUI) would otherwise contend for the fixed port.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     fn should_start_local_http_server(&self) -> bool {
-        !self.is_headless()
+        !self.is_headless() && !ChannelState::is_terminal_only()
     }
 
     /// Returns `true` if this process can build and sync codebase indices.
@@ -570,7 +570,7 @@ impl LaunchMode {
             LaunchMode::RemoteServerDaemon { .. } => {
                 FeatureFlag::RemoteCodebaseIndexing.is_enabled()
             }
-            LaunchMode::App { .. } | LaunchMode::Test { .. } => true,
+            LaunchMode::App { .. } | LaunchMode::Test { .. } => !ChannelState::is_terminal_only(),
             LaunchMode::RemoteServerProxy => false,
             // Codebase indexing stays off for the TUI until it has deferred
             // persisted-index restore and multi-process-safe snapshot writes
@@ -2399,7 +2399,9 @@ pub(crate) fn initialize_app(
 
     // Index global rules (e.g. ~/.agents/AGENTS.md) on a background task so
     // they are available to subsequent agent queries.
-    ProjectContextModel::handle(ctx).update(ctx, |me, ctx| me.index_global_rules(ctx));
+    if !ChannelState::is_terminal_only() {
+        ProjectContextModel::handle(ctx).update(ctx, |me, ctx| me.index_global_rules(ctx));
+    }
     #[cfg(all(not(target_family = "wasm"), feature = "local_fs"))]
     {
         ctx.add_singleton_model(ai::remote_agent_context::RemoteAgentContext::new);

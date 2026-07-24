@@ -1514,6 +1514,73 @@ pub fn init(app: &mut AppContext) {
 fn add_open_setting_pages_as_editable_binding(app: &mut AppContext) {
     use warpui::keymap::macros::*;
 
+    if ChannelState::is_terminal_only() {
+        app.register_editable_bindings([
+            EditableBinding::new(
+                "workspace:show_settings",
+                BindingDescription::new("Open Settings")
+                    .with_custom_description(bindings::MAC_MENUS_CONTEXT, "Settings"),
+                WorkspaceAction::ShowSettings,
+            )
+            .with_context_predicate(id!("Workspace"))
+            .with_group(bindings::BindingGroup::Settings.as_str())
+            .with_custom_action(CustomAction::ShowSettings),
+            EditableBinding::new(
+                "workspace:show_settings_appearance_page",
+                BindingDescription::new("Open Settings: Appearance")
+                    .with_custom_description(bindings::MAC_MENUS_CONTEXT, "Appearance..."),
+                WorkspaceAction::ShowSettingsPage(SettingsSection::Appearance),
+            )
+            .with_group(bindings::BindingGroup::Settings.as_str())
+            .with_context_predicate(id!("Workspace"))
+            .with_custom_action(CustomAction::ShowAppearance),
+            EditableBinding::new(
+                "workspace:show_settings_features_page",
+                "Open Settings: Features",
+                WorkspaceAction::ShowSettingsPage(SettingsSection::Features),
+            )
+            .with_group(bindings::BindingGroup::Settings.as_str())
+            .with_context_predicate(id!("Workspace")),
+            EditableBinding::new(
+                "workspace:show_settings_keyboard_shortcuts_page",
+                BindingDescription::new("Open Settings: Keyboard Shortcuts")
+                    .with_custom_description(
+                        bindings::MAC_MENUS_CONTEXT,
+                        "Configure Keyboard Shortcuts...",
+                    ),
+                WorkspaceAction::ShowSettingsPage(SettingsSection::Keybindings),
+            )
+            .with_group(bindings::BindingGroup::KeyboardShortcuts.as_str())
+            .with_context_predicate(id!("Workspace"))
+            .with_custom_action(CustomAction::ConfigureKeybindings),
+            EditableBinding::new(
+                "workspace:show_settings_privacy_page",
+                BindingDescription::new("Open Settings: Privacy"),
+                WorkspaceAction::ShowSettingsPage(SettingsSection::Privacy),
+            )
+            .with_group(bindings::BindingGroup::Settings.as_str())
+            .with_context_predicate(id!("Workspace")),
+            EditableBinding::new(
+                "workspace:show_settings_about_page",
+                BindingDescription::new("Open Settings: About")
+                    .with_custom_description(bindings::MAC_MENUS_CONTEXT, "About Warp"),
+                WorkspaceAction::ShowSettingsPage(SettingsSection::About),
+            )
+            .with_group(bindings::BindingGroup::Settings.as_str())
+            .with_context_predicate(id!("Workspace"))
+            .with_custom_action(CustomAction::ShowAboutWarp),
+            EditableBinding::new(
+                "workspace:open_settings_file",
+                "Open settings file",
+                WorkspaceAction::OpenSettingsFile,
+            )
+            .with_enabled(|| FeatureFlag::SettingsFile.is_enabled() && cfg!(feature = "local_fs"))
+            .with_group(bindings::BindingGroup::Settings.as_str())
+            .with_context_predicate(id!("Workspace")),
+        ]);
+        return;
+    }
+
     // Add the ability to open setting modals to the command palette.
     app.register_editable_bindings([
         EditableBinding::new(

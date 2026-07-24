@@ -1,8 +1,177 @@
 use settings_page::MatchData;
+use warp_core::channel::ProductProfile;
 
 use super::*;
 
 // ── SettingsSection classification ──────────────────────────────────────────
+
+#[test]
+fn terminal_only_settings_allow_only_terminal_pages() {
+    let allowed = [
+        SettingsSection::Appearance,
+        SettingsSection::Features,
+        SettingsSection::Keybindings,
+        SettingsSection::Privacy,
+        SettingsSection::About,
+    ];
+    for section in allowed {
+        assert!(section.is_allowed(ProductProfile::TerminalOnly));
+    }
+
+    let disallowed = [
+        SettingsSection::Account,
+        SettingsSection::MCPServers,
+        SettingsSection::BillingAndUsage,
+        SettingsSection::Referrals,
+        SettingsSection::Scripting,
+        SettingsSection::SharedBlocks,
+        SettingsSection::Teams,
+        SettingsSection::WarpDrive,
+        SettingsSection::Warpify,
+        SettingsSection::AI,
+        SettingsSection::WarpAgent,
+        SettingsSection::AgentProfiles,
+        SettingsSection::AgentMCPServers,
+        SettingsSection::Knowledge,
+        SettingsSection::ThirdPartyCLIAgents,
+        SettingsSection::Code,
+        SettingsSection::CodeIndexing,
+        SettingsSection::EditorAndCodeReview,
+        SettingsSection::CloudEnvironments,
+        SettingsSection::OzCloudAPIKeys,
+    ];
+    for section in disallowed {
+        assert!(!section.is_allowed(ProductProfile::TerminalOnly));
+    }
+}
+
+#[test]
+fn normalize_requested_keeps_full_profile_compatibility() {
+    assert_eq!(
+        SettingsSection::normalize_requested(None, ProductProfile::Full),
+        SettingsSection::Account
+    );
+    assert_eq!(
+        SettingsSection::normalize_requested(Some(SettingsSection::AI), ProductProfile::Full),
+        SettingsSection::WarpAgent
+    );
+    assert_eq!(
+        SettingsSection::normalize_requested(Some(SettingsSection::Code), ProductProfile::Full),
+        SettingsSection::CodeIndexing
+    );
+}
+
+#[test]
+fn normalize_requested_falls_back_to_appearance_for_terminal_only() {
+    assert_eq!(
+        SettingsSection::normalize_requested(None, ProductProfile::TerminalOnly),
+        SettingsSection::Appearance
+    );
+
+    let disallowed = [
+        SettingsSection::Account,
+        SettingsSection::MCPServers,
+        SettingsSection::BillingAndUsage,
+        SettingsSection::Referrals,
+        SettingsSection::Scripting,
+        SettingsSection::SharedBlocks,
+        SettingsSection::Teams,
+        SettingsSection::WarpDrive,
+        SettingsSection::Warpify,
+        SettingsSection::AI,
+        SettingsSection::WarpAgent,
+        SettingsSection::AgentProfiles,
+        SettingsSection::AgentMCPServers,
+        SettingsSection::Knowledge,
+        SettingsSection::ThirdPartyCLIAgents,
+        SettingsSection::Code,
+        SettingsSection::CodeIndexing,
+        SettingsSection::EditorAndCodeReview,
+        SettingsSection::CloudEnvironments,
+        SettingsSection::OzCloudAPIKeys,
+    ];
+    for section in disallowed {
+        assert_eq!(
+            SettingsSection::normalize_requested(Some(section), ProductProfile::TerminalOnly),
+            SettingsSection::Appearance,
+            "{section:?} should fall back to Appearance"
+        );
+    }
+
+    for section in [
+        SettingsSection::Appearance,
+        SettingsSection::Features,
+        SettingsSection::Keybindings,
+        SettingsSection::Privacy,
+        SettingsSection::About,
+    ] {
+        assert_eq!(
+            SettingsSection::normalize_requested(Some(section), ProductProfile::TerminalOnly),
+            section
+        );
+    }
+}
+
+#[test]
+fn terminal_only_navigation_has_only_terminal_pages_in_order() {
+    let sections: Vec<_> = settings_nav_items(ProductProfile::TerminalOnly)
+        .iter()
+        .map(|item| match item {
+            SettingsNavItem::Page(section) => *section,
+            SettingsNavItem::Umbrella(_) => {
+                panic!("terminal-only navigation must not have umbrellas")
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        sections,
+        vec![
+            SettingsSection::Appearance,
+            SettingsSection::Features,
+            SettingsSection::Keybindings,
+            SettingsSection::Privacy,
+            SettingsSection::About,
+        ]
+    );
+}
+
+#[test]
+fn terminal_only_widget_deeplinks_exclude_agent_widgets() {
+    assert_eq!(
+        settings_widget_deeplink_target_for_profile("global_hotkey", ProductProfile::TerminalOnly)
+            .map(|(section, _)| section),
+        Some(SettingsSection::Features)
+    );
+    assert_eq!(
+        settings_widget_deeplink_target_for_profile("custom_router", ProductProfile::TerminalOnly),
+        None
+    );
+    assert_eq!(
+        settings_widget_deeplink_target_for_profile("cli_agents", ProductProfile::TerminalOnly),
+        None
+    );
+}
+
+#[test]
+fn full_profile_widget_deeplinks_remain_available() {
+    assert_eq!(
+        settings_widget_deeplink_target_for_profile("global_hotkey", ProductProfile::Full)
+            .map(|(section, _)| section),
+        Some(SettingsSection::Features)
+    );
+    assert_eq!(
+        settings_widget_deeplink_target_for_profile("custom_router", ProductProfile::Full)
+            .map(|(section, _)| section),
+        Some(SettingsSection::WarpAgent)
+    );
+    #[cfg(not(target_family = "wasm"))]
+    assert_eq!(
+        settings_widget_deeplink_target_for_profile("cli_agents", ProductProfile::Full)
+            .map(|(section, _)| section),
+        Some(SettingsSection::ThirdPartyCLIAgents)
+    );
+}
 
 #[test]
 fn ai_subpages_are_identified() {

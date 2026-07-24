@@ -206,7 +206,7 @@ use crate::ai::predict::prompt_suggestions::{
 use crate::ai::skills::{SkillOpenOrigin, SkillTelemetryEvent};
 use crate::ai_assistant::execution_context::WarpAiExecutionContext;
 use crate::appearance::{Appearance, AppearanceEvent};
-use crate::channel::{Channel, ChannelState};
+use crate::channel::{Channel, ChannelState, ProductProfile};
 use crate::cloud_object::model::actions::ObjectActionType;
 use crate::cloud_object::model::generic_string_model::StringModel;
 use crate::cloud_object::model::persistence::CloudModel;
@@ -495,6 +495,27 @@ const AI_INPUT_PREFIX: &str = "* ";
 const TERMINAL_INPUT_PREFIX: &str = "!";
 /// If the editor buffer matches this prefix, local agent input enters cloud handoff compose mode.
 const CLOUD_HANDOFF_INPUT_PREFIX: &str = "&";
+
+fn normalize_input_config_for_profile(
+    product_profile: ProductProfile,
+    input_config: InputConfig,
+) -> InputConfig {
+    if product_profile == ProductProfile::TerminalOnly {
+        InputConfig {
+            input_type: InputType::Shell,
+            is_locked: true,
+        }
+    } else {
+        input_config
+    }
+}
+
+fn can_attach_images_for_profile(
+    product_profile: ProductProfile,
+    is_cli_agent_input_open: bool,
+) -> bool {
+    product_profile == ProductProfile::Full || is_cli_agent_input_open
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputPrefixMode {
@@ -1998,7 +2019,7 @@ pub fn init(app: &mut AppContext) {
                 },
             },
         )
-        .with_enabled(|| !FeatureFlag::AgentView.is_enabled())
+        .with_enabled(|| !FeatureFlag::AgentView.is_enabled() && !ChannelState::is_terminal_only())
         .with_group(bindings::BindingGroup::WarpAi.as_str())
         .with_context_predicate(
             id!("Input") & id!(flags::IS_ANY_AI_ENABLED) & id!("TerminalView_NonEmptyBlockList"),
@@ -3254,9 +3275,13 @@ impl Input {
             }
             if let Some(input_config) = input_config_to_restore {
                 let is_buffer_empty = me.editor.as_ref(ctx).buffer_text(ctx).is_empty();
+                let input_config = normalize_input_config_for_profile(
+                    ChannelState::product_profile(),
+                    *input_config,
+                );
                 me.ai_input_model.update(ctx, |ai_input_model, ctx| {
                     ai_input_model.set_input_config(
-                        *input_config,
+                        input_config,
                         is_buffer_empty,
                         Some(InputTypeAutoDetectionSource::RestoreSavedConfig),
                         ctx,
@@ -6573,6 +6598,10 @@ impl Input {
         from: &voice_input::VoiceInputToggledFrom,
         ctx: &mut ViewContext<Self>,
     ) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         self.enter_ai_mode(Some(InputTypeAutoDetectionSource::VoiceInputToggle), ctx);
         let did_start_listening = self
             .editor
@@ -6583,6 +6612,10 @@ impl Input {
     }
 
     fn select_image(&mut self, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         self.focus_input_box(ctx);
         self.ensure_agent_mode_for_ai_features(
             true,
@@ -6716,6 +6749,21 @@ impl Input {
 
                 let is_input_buffer_empty = self.editor.as_ref(ctx).buffer_text(ctx).is_empty();
 
+                if ChannelState::is_terminal_only() {
+                    self.ai_input_model.update(ctx, |model, ctx| {
+                        model.set_input_config(
+                            InputConfig {
+                                input_type: InputType::Shell,
+                                is_locked: true,
+                            },
+                            is_input_buffer_empty,
+                            Some(InputTypeAutoDetectionSource::ManualToggle),
+                            ctx,
+                        );
+                    });
+                    return;
+                }
+
                 let switch_to_auto = self.ai_input_model.update(ctx, |model, ctx| {
                     let is_autodetection_enabled =
                         AISettings::as_ref(ctx).is_ai_autodetection_enabled(ctx);
@@ -6755,7 +6803,9 @@ impl Input {
                 }
             }
             UniversalDeveloperInputButtonBarEvent::EnableAutoDetection => {
-                self.enable_auto_detection(ctx);
+                if !ChannelState::is_terminal_only() {
+                    self.enable_auto_detection(ctx);
+                }
             }
             UniversalDeveloperInputButtonBarEvent::SelectFile => {
                 self.select_image(ctx);
@@ -8809,10 +8859,13 @@ impl Input {
             // whether it was locked to that mode.
             self.ai_input_model.update(ctx, |ai_input_model, ctx| {
                 ai_input_model.set_input_config(
-                    InputConfig {
-                        input_type: original_input_type,
-                        is_locked: original_input_was_locked,
-                    },
+                    normalize_input_config_for_profile(
+                        ChannelState::product_profile(),
+                        InputConfig {
+                            input_type: original_input_type,
+                            is_locked: original_input_was_locked,
+                        },
+                    ),
                     original_buffer.is_empty(),
                     Some(InputTypeAutoDetectionSource::RestoreSavedConfig),
                     ctx,
@@ -10321,6 +10374,7 @@ impl Input {
                 if FeatureFlag::AgentMode.is_enabled()
                     && !FeatureFlag::AgentView.is_enabled()
                     && AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
+                    && !ChannelState::is_terminal_only()
                     && (!is_ai_input_enabled || !is_input_mode_locked)
                 {
                     if buffer_text.starts_with(AI_INPUT_PREFIX)
@@ -11338,6 +11392,10 @@ impl Input {
         // gates image chips on `ImageAsContext` + an active CLI agent session.
         let is_cli_agent_input_open =
             CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id);
+        if !can_attach_images_for_profile(ChannelState::product_profile(), is_cli_agent_input_open)
+        {
+            return false;
+        }
         if is_cli_agent_input_open {
             return true;
         }
@@ -11362,6 +11420,13 @@ impl Input {
         clipboard_content: ClipboardContent,
         ctx: &mut ViewContext<Self>,
     ) -> usize {
+        let is_cli_agent_input_open =
+            CLIAgentSessionsModel::as_ref(ctx).is_input_open(self.terminal_view_id);
+        if !can_attach_images_for_profile(ChannelState::product_profile(), is_cli_agent_input_open)
+        {
+            return 0;
+        }
+
         if self.check_image_limits_for_paste(1, ctx) == 0 {
             return 0;
         }
@@ -14701,6 +14766,10 @@ impl Input {
 
     /// Set input mode to natural language detection (auto-detection)
     pub fn set_input_mode_natural_language_detection(&mut self, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         if self.is_input_mode_toggle_disabled(ctx) {
             return;
         }
@@ -16004,6 +16073,10 @@ impl TypedActionView for Input {
                 self.select_slash_command(command, SlashCommandTrigger::keybinding(), ctx);
             }
             InputAction::StartNewAgentConversation { origin } => {
+                if ChannelState::is_terminal_only() {
+                    return;
+                }
+
                 // Block starting a new conversation if the agent is in control of a long-running command
                 if !self
                     .ai_context_model

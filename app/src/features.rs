@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use warp_core::channel::ChannelState;
+use warp_core::channel::{ChannelState, ProductProfile};
 pub use warp_core::features::*;
 
 /// Mark all features which should be enabled on the current channel as enabled.
@@ -515,5 +515,64 @@ fn enabled_features() -> HashSet<FeatureFlag> {
         FeatureFlag::TerminalLifecycleRecovery,
     ]);
 
-    flags
+    filter_features_for_product_profile(flags, ChannelState::product_profile())
 }
+
+fn filter_features_for_product_profile(
+    flags: HashSet<FeatureFlag>,
+    product_profile: ProductProfile,
+) -> HashSet<FeatureFlag> {
+    match product_profile {
+        ProductProfile::Full => flags,
+        ProductProfile::TerminalOnly => flags
+            .into_iter()
+            .filter(|flag| terminal_only_feature_allowed(*flag))
+            .collect(),
+    }
+}
+
+fn terminal_only_feature_allowed(flag: FeatureFlag) -> bool {
+    matches!(
+        flag,
+        FeatureFlag::ResizeFix
+            | FeatureFlag::TerminalLifecycleRecovery
+            | FeatureFlag::ImeMarkedText
+            | FeatureFlag::Ligatures
+            | FeatureFlag::SelectablePrompt
+            | FeatureFlag::RectSelection
+            | FeatureFlag::RichTextMultiselect
+            | FeatureFlag::OscHyperlinks
+            | FeatureFlag::KittyKeyboardProtocol
+            | FeatureFlag::KittyImages
+            | FeatureFlag::ShellSelector
+            | FeatureFlag::SshDragAndDrop
+            | FeatureFlag::CycleNextCommandSuggestion
+            | FeatureFlag::PartialNextCommandSuggestions
+            | FeatureFlag::ValidateAutosuggestions
+            | FeatureFlag::ClearAutosuggestionOnEscape
+            | FeatureFlag::ClassicCompletions
+            | FeatureFlag::ForceClassicCompletions
+            | FeatureFlag::SettingsFile
+            | FeatureFlag::UIZoom
+            | FeatureFlag::UndoClosedPanes
+            | FeatureFlag::DragTabsToWindows
+            | FeatureFlag::MultiWorkspace
+            | FeatureFlag::NewTabStyling
+            | FeatureFlag::VerticalTabs
+            | FeatureFlag::VerticalTabsSummaryMode
+            | FeatureFlag::TabConfigs
+            | FeatureFlag::GroupedTabs
+            | FeatureFlag::PinnedTabs
+            | FeatureFlag::DirectoryTabColors
+            | FeatureFlag::AsyncFind
+            | FeatureFlag::TrimTrailingBlankLines
+            | FeatureFlag::MinimalistUI
+            | FeatureFlag::FullScreenZenMode
+            | FeatureFlag::TabCloseButtonOnLeft
+            | FeatureFlag::AllowIgnoringInputSuggestions
+    )
+}
+
+#[cfg(test)]
+#[path = "features_tests.rs"]
+mod tests;

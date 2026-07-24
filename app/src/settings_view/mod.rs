@@ -26,7 +26,7 @@ use settings_page::{
 };
 use show_blocks_view::{ShowBlocksEvent, ShowBlocksView};
 use teams_page::{TeamsPageView, TeamsPageViewEvent};
-use warp_core::channel::ChannelState;
+use warp_core::channel::{ChannelState, ProductProfile};
 use warp_core::context_flag::ContextFlag;
 use warp_core::features::FeatureFlag;
 use warp_core::send_telemetry_from_ctx;
@@ -311,6 +311,46 @@ impl Display for SettingsSection {
 }
 
 impl SettingsSection {
+    /// Returns whether this section is exposed by the selected product profile.
+    pub(crate) fn is_allowed(self, profile: ProductProfile) -> bool {
+        match profile {
+            ProductProfile::Full => true,
+            ProductProfile::TerminalOnly => matches!(
+                self,
+                Self::Appearance | Self::Features | Self::Keybindings | Self::Privacy | Self::About
+            ),
+        }
+    }
+
+    /// Returns the page used when a requested section is unavailable in the
+    /// selected product profile.
+    pub(crate) fn fallback(profile: ProductProfile) -> Self {
+        match profile {
+            ProductProfile::Full => Self::Account,
+            ProductProfile::TerminalOnly => Self::Appearance,
+        }
+    }
+
+    /// Resolves persisted, deeplinked, and internal page requests to a page
+    /// available in the selected product profile.
+    pub(crate) fn normalize_requested(requested: Option<Self>, profile: ProductProfile) -> Self {
+        let section = match requested {
+            None => Self::fallback(profile),
+            Some(Self::AI) => Self::WarpAgent,
+            Some(Self::Code) => Self::CodeIndexing,
+            Some(Self::Scripting) if !FeatureFlag::WarpControlCli.is_enabled() => {
+                Self::fallback(profile)
+            }
+            Some(section) => section,
+        };
+
+        if section.is_allowed(profile) {
+            section
+        } else {
+            Self::fallback(profile)
+        }
+    }
+
     /// Returns true if this section is a subpage under any umbrella.
     pub fn is_subpage(&self) -> bool {
         self.is_ai_subpage() || self.is_code_subpage() || self.is_cloud_platform_subpage()
@@ -420,19 +460,86 @@ impl FromStr for SettingsSection {
 /// stable and internal widget identifiers (Rust type names) are not exposed.
 /// Add an entry here to make a new widget deep-linkable.
 pub fn settings_widget_deeplink_target(slug: &str) -> Option<(SettingsSection, &'static str)> {
-    match slug {
-        "global_hotkey" => Some((
+    settings_widget_deeplink_target_for_profile(slug, ChannelState::product_profile())
+}
+
+pub(crate) fn settings_widget_deeplink_target_for_profile(
+    slug: &str,
+    profile: ProductProfile,
+) -> Option<(SettingsSection, &'static str)> {
+    match (profile, slug) {
+        (_, "global_hotkey") => Some((
             SettingsSection::Features,
             features_page::global_hotkey_widget_id(),
         )),
-        "custom_router" => Some((SettingsSection::WarpAgent, custom_model_routers_widget_id())),
+        (ProductProfile::Full, "custom_router") => {
+            Some((SettingsSection::WarpAgent, custom_model_routers_widget_id()))
+        }
         #[cfg(not(target_family = "wasm"))]
-        "cli_agents" => Some((
+        (ProductProfile::Full, "cli_agents") => Some((
             SettingsSection::ThirdPartyCLIAgents,
             cli_agent_settings_widget_id(),
         )),
         _ => None,
     }
+}
+
+fn settings_nav_items(profile: ProductProfile) -> Vec<SettingsNavItem> {
+    if profile == ProductProfile::TerminalOnly {
+        return vec![
+            SettingsNavItem::Page(SettingsSection::Appearance),
+            SettingsNavItem::Page(SettingsSection::Features),
+            SettingsNavItem::Page(SettingsSection::Keybindings),
+            SettingsNavItem::Page(SettingsSection::Privacy),
+            SettingsNavItem::Page(SettingsSection::About),
+        ];
+    }
+
+    let mut nav_items = vec![
+        SettingsNavItem::Page(SettingsSection::Account),
+        SettingsNavItem::Umbrella(SettingsUmbrella::new(
+            "Agents",
+            SettingsSection::ai_subpages().to_vec(),
+        )),
+        SettingsNavItem::Page(SettingsSection::BillingAndUsage),
+        SettingsNavItem::Umbrella(SettingsUmbrella::new(
+            "Code",
+            vec![
+                SettingsSection::CodeIndexing,
+                SettingsSection::EditorAndCodeReview,
+            ],
+        )),
+        SettingsNavItem::Umbrella(SettingsUmbrella::new(
+            "Cloud platform",
+            vec![
+                SettingsSection::CloudEnvironments,
+                SettingsSection::OzCloudAPIKeys,
+            ],
+        )),
+        SettingsNavItem::Page(SettingsSection::Teams),
+        SettingsNavItem::Page(SettingsSection::Appearance),
+        SettingsNavItem::Page(SettingsSection::Features),
+        SettingsNavItem::Page(SettingsSection::Keybindings),
+        SettingsNavItem::Page(SettingsSection::Warpify),
+        SettingsNavItem::Page(SettingsSection::Referrals),
+        SettingsNavItem::Page(SettingsSection::SharedBlocks),
+        SettingsNavItem::Page(SettingsSection::WarpDrive),
+        SettingsNavItem::Page(SettingsSection::Privacy),
+        SettingsNavItem::Page(SettingsSection::About),
+    ];
+
+    if FeatureFlag::WarpControlCli.is_enabled() {
+        let shared_blocks_index = nav_items
+            .iter()
+            .position(|item| matches!(item, SettingsNavItem::Page(SettingsSection::SharedBlocks)))
+            .unwrap_or(nav_items.len());
+        nav_items.insert(
+            shared_blocks_index,
+            SettingsNavItem::Page(SettingsSection::Scripting),
+        );
+    }
+
+    nav_items
 }
 
 pub struct DisplayCount(pub usize);
@@ -639,14 +746,20 @@ pub fn init_actions_from_parent_view<T: Action + Clone>(
     context: &ContextPredicate,
     builder: fn(SettingsAction) -> T,
 ) {
-    main_page::init_actions_from_parent_view(app, context, builder);
-    appearance_page::init_actions_from_parent_view(app, context, builder);
-    features_page::init_actions_from_parent_view(app, context, builder);
-    warpify_page::init_actions_from_parent_view(app, context, builder);
-    privacy_page::init_actions_from_parent_view(app, context, builder);
-    ai_page::init_actions_from_parent_view(app, context, builder);
-    code_page::init_actions_from_parent_view(app, context, builder);
-    warp_drive_page::init_actions_from_parent_view(app, context, builder);
+    if ChannelState::is_terminal_only() {
+        appearance_page::init_actions_from_parent_view(app, context, builder);
+        features_page::init_actions_from_parent_view(app, context, builder);
+        privacy_page::init_actions_from_parent_view(app, context, builder);
+    } else {
+        main_page::init_actions_from_parent_view(app, context, builder);
+        appearance_page::init_actions_from_parent_view(app, context, builder);
+        features_page::init_actions_from_parent_view(app, context, builder);
+        warpify_page::init_actions_from_parent_view(app, context, builder);
+        privacy_page::init_actions_from_parent_view(app, context, builder);
+        ai_page::init_actions_from_parent_view(app, context, builder);
+        code_page::init_actions_from_parent_view(app, context, builder);
+        warp_drive_page::init_actions_from_parent_view(app, context, builder);
+    }
 
     if ChannelState::enable_debug_features() || cfg!(windows) {
         ToggleSettingActionPair::add_toggle_setting_action_pairs_as_bindings(
@@ -1329,64 +1442,9 @@ impl SettingsView {
             SettingsPage::new(about_page_handle),
         ]);
 
-        // Build sidebar nav items. AI page is presented as an "Agents" umbrella
-        // with subpages; the actual AI SettingsPage is hidden from direct sidebar listing.
-        let mut nav_items = vec![
-            SettingsNavItem::Page(SettingsSection::Account),
-            SettingsNavItem::Umbrella(SettingsUmbrella::new(
-                "Agents",
-                SettingsSection::ai_subpages().to_vec(),
-            )),
-            SettingsNavItem::Page(SettingsSection::BillingAndUsage),
-            SettingsNavItem::Umbrella(SettingsUmbrella::new(
-                "Code",
-                vec![
-                    SettingsSection::CodeIndexing,
-                    SettingsSection::EditorAndCodeReview,
-                ],
-            )),
-            SettingsNavItem::Umbrella(SettingsUmbrella::new(
-                "Cloud platform",
-                vec![
-                    SettingsSection::CloudEnvironments,
-                    SettingsSection::OzCloudAPIKeys,
-                ],
-            )),
-            SettingsNavItem::Page(SettingsSection::Teams),
-            SettingsNavItem::Page(SettingsSection::Appearance),
-            SettingsNavItem::Page(SettingsSection::Features),
-            SettingsNavItem::Page(SettingsSection::Keybindings),
-            SettingsNavItem::Page(SettingsSection::Warpify),
-            SettingsNavItem::Page(SettingsSection::Referrals),
-            SettingsNavItem::Page(SettingsSection::SharedBlocks),
-            SettingsNavItem::Page(SettingsSection::WarpDrive),
-            SettingsNavItem::Page(SettingsSection::Privacy),
-            SettingsNavItem::Page(SettingsSection::About),
-        ];
-
-        if FeatureFlag::WarpControlCli.is_enabled() {
-            let shared_blocks_index = nav_items
-                .iter()
-                .position(|item| {
-                    matches!(item, SettingsNavItem::Page(SettingsSection::SharedBlocks))
-                })
-                .unwrap_or(nav_items.len());
-            nav_items.insert(
-                shared_blocks_index,
-                SettingsNavItem::Page(SettingsSection::Scripting),
-            );
-        }
-
-        // Resolve the initial page: map internal backing-page sections to their default subpage.
-        let initial_page = match page {
-            Some(SettingsSection::AI) => SettingsSection::WarpAgent,
-            Some(SettingsSection::Code) => SettingsSection::CodeIndexing,
-            Some(SettingsSection::Scripting) if !FeatureFlag::WarpControlCli.is_enabled() => {
-                SettingsSection::Account
-            }
-            Some(section) if section.is_subpage() => section,
-            other => other.unwrap_or_default(),
-        };
+        let profile = ChannelState::product_profile();
+        let mut nav_items = settings_nav_items(profile);
+        let initial_page = SettingsSection::normalize_requested(page, profile);
 
         // Auto-expand the umbrella if the initial page is one of its subpages.
         if initial_page.is_subpage() {
@@ -1456,12 +1514,15 @@ impl SettingsView {
         &'a self,
         app: &'a AppContext,
     ) -> impl Iterator<Item = (&'a SettingsPage, MatchData)> {
+        let profile = ChannelState::product_profile();
         self.settings_pages
             .iter()
             .zip(self.pages_filter.iter())
             .filter_map(move |(page, match_data)| {
-                (self.should_render_page(page, app) && match_data.is_truthy())
-                    .then_some((page, *match_data))
+                (page.section.is_allowed(profile)
+                    && self.should_render_page(page, app)
+                    && match_data.is_truthy())
+                .then_some((page, *match_data))
             })
     }
 
@@ -1475,47 +1536,52 @@ impl SettingsView {
             EditorEvent::Edited(_) => {
                 let search_query = editor.as_ref(ctx).buffer_text(ctx);
                 let is_search_active = !search_query.is_empty();
+                let profile = ChannelState::product_profile();
 
                 if is_search_active {
-                    // Save umbrella expanded state before search modifies it.
-                    for item in &mut self.nav_items {
-                        if let SettingsNavItem::Umbrella(umbrella) = item
-                            && umbrella.pre_search_expanded.is_none()
-                        {
-                            umbrella.pre_search_expanded = Some(umbrella.expanded);
+                    if profile == ProductProfile::Full {
+                        // Save umbrella expanded state before search modifies it.
+                        for item in &mut self.nav_items {
+                            if let SettingsNavItem::Umbrella(umbrella) = item
+                                && umbrella.pre_search_expanded.is_none()
+                            {
+                                umbrella.pre_search_expanded = Some(umbrella.expanded);
+                            }
                         }
-                    }
 
-                    // Run per-subpage filtering for pages with multiple subpages.
-                    // For each AI subpage, temporarily switch to that subpage's
-                    // widget set and run the filter to get a subpage-specific result.
-                    self.subpage_filter.clear();
-                    for &subpage_section in SettingsSection::ai_subpages() {
-                        if subpage_section == SettingsSection::AgentMCPServers {
-                            // AgentMCPServers has its own backing page; handled below.
-                            continue;
+                        // Run per-subpage filtering for pages with multiple subpages.
+                        // For each AI subpage, temporarily switch to that subpage's
+                        // widget set and run the filter to get a subpage-specific result.
+                        self.subpage_filter.clear();
+                        for &subpage_section in SettingsSection::ai_subpages() {
+                            if subpage_section == SettingsSection::AgentMCPServers {
+                                // AgentMCPServers has its own backing page; handled below.
+                                continue;
+                            }
+                            if let Some(subpage) = AISubpage::from_section(subpage_section) {
+                                self.ai_page_handle.update(ctx, |view, ctx| {
+                                    view.set_active_subpage(Some(subpage), ctx);
+                                });
+                                let match_data = self.ai_page_handle.update(ctx, |view, ctx| {
+                                    view.update_filter(&search_query, ctx)
+                                });
+                                self.subpage_filter.insert(subpage_section, match_data);
+                            }
                         }
-                        if let Some(subpage) = AISubpage::from_section(subpage_section) {
-                            self.ai_page_handle.update(ctx, |view, ctx| {
-                                view.set_active_subpage(Some(subpage), ctx);
-                            });
-                            let match_data = self
-                                .ai_page_handle
-                                .update(ctx, |view, ctx| view.update_filter(&search_query, ctx));
-                            self.subpage_filter.insert(subpage_section, match_data);
+                        // Do the same for Code subpages.
+                        for &subpage_section in SettingsSection::code_subpages() {
+                            if let Some(subpage) = CodeSubpage::from_section(subpage_section) {
+                                self.code_page_handle.update(ctx, |view, ctx| {
+                                    view.set_active_subpage(Some(subpage), ctx);
+                                });
+                                let match_data = self.code_page_handle.update(ctx, |view, ctx| {
+                                    view.update_filter(&search_query, ctx)
+                                });
+                                self.subpage_filter.insert(subpage_section, match_data);
+                            }
                         }
-                    }
-                    // Do the same for Code subpages.
-                    for &subpage_section in SettingsSection::code_subpages() {
-                        if let Some(subpage) = CodeSubpage::from_section(subpage_section) {
-                            self.code_page_handle.update(ctx, |view, ctx| {
-                                view.set_active_subpage(Some(subpage), ctx);
-                            });
-                            let match_data = self
-                                .code_page_handle
-                                .update(ctx, |view, ctx| view.update_filter(&search_query, ctx));
-                            self.subpage_filter.insert(subpage_section, match_data);
-                        }
+                    } else {
+                        self.subpage_filter.clear();
                     }
                 } else {
                     // Search cleared: restore umbrella expanded state.
@@ -1533,7 +1599,7 @@ impl SettingsView {
                 // and for subpages with their own backing page like AgentMCPServers).
                 // Switch AI/Code to all-widgets mode so standalone backing page
                 // filter is correct for pages_filter.
-                if is_search_active {
+                if is_search_active && profile == ProductProfile::Full {
                     self.ai_page_handle.update(ctx, |view, ctx| {
                         view.set_active_subpage(None, ctx);
                     });
@@ -1543,6 +1609,10 @@ impl SettingsView {
                 }
 
                 for (i, page) in self.settings_pages.iter().enumerate() {
+                    if !page.section.is_allowed(profile) {
+                        self.pages_filter[i] = MatchData::Uncounted(false);
+                        continue;
+                    }
                     self.pages_filter[i] = update_page!(
                         &page.view_handle,
                         |view, ctx| {
@@ -1555,7 +1625,7 @@ impl SettingsView {
                 }
 
                 // Restore the active subpage after filtering.
-                if is_search_active {
+                if is_search_active && profile == ProductProfile::Full {
                     let current = self.current_settings_page;
                     if current.is_ai_subpage()
                         && current != SettingsSection::AgentMCPServers
@@ -2026,13 +2096,8 @@ impl SettingsView {
         allow_steal_focus: bool,
         ctx: &mut ViewContext<Self>,
     ) {
-        // Map internal backing-page sections to their default subpage.
-        // External callers should use subpage variants directly.
-        let section = match section {
-            SettingsSection::AI => SettingsSection::WarpAgent,
-            SettingsSection::Code => SettingsSection::CodeIndexing,
-            other => other,
-        };
+        let section =
+            SettingsSection::normalize_requested(Some(section), ChannelState::product_profile());
 
         // For AI subpages, the backing page is the AI page. Check it exists.
         let page_section = section.parent_page_section();
@@ -2152,6 +2217,10 @@ impl SettingsView {
         email: Option<&String>,
         ctx: &mut ViewContext<Self>,
     ) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         if let Some(team_page) = self.settings_page(SettingsSection::Teams)
             && let SettingsPageViewHandle::Teams(view) = &team_page.view_handle
         {
@@ -2169,6 +2238,10 @@ impl SettingsView {
         autoinstall_gallery_title: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         // Navigate to the AgentMCPServers subpage (under the Agents umbrella).
         self.set_and_refresh_current_page(SettingsSection::AgentMCPServers, ctx);
         if let Some(mcp_page) = self.settings_page(SettingsSection::MCPServers)
@@ -2232,6 +2305,10 @@ impl SettingsView {
     /// when rendering sidebar items so arrow-key navigation stays in sync
     /// with what the user can actually see.
     fn section_passes_search_filter(&self, section: SettingsSection) -> bool {
+        if !section.is_allowed(ChannelState::product_profile()) {
+            return false;
+        }
+
         if let Some(md) = self.subpage_filter.get(&section) {
             md.is_truthy()
         } else {
@@ -2307,6 +2384,10 @@ impl SettingsView {
         widget_id: &'static str,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !page.is_allowed(ChannelState::product_profile()) {
+            return;
+        }
+
         self.set_and_refresh_current_page_internal(page, true, true, ctx);
         if let Some(current_page) = self.current_settings_page() {
             update_page!(
@@ -2692,7 +2773,9 @@ impl TypedActionView for SettingsView {
             SettingsAction::SelectAndRefresh(section) => {
                 self.set_and_refresh_current_page_internal(*section, false, true, ctx);
 
-                if *section == SettingsSection::MCPServers {
+                if section.is_allowed(ChannelState::product_profile())
+                    && *section == SettingsSection::MCPServers
+                {
                     send_telemetry_from_ctx!(
                         TelemetryEvent::MCPServerCollectionPaneOpened {
                             entrypoint: MCPServerCollectionPaneEntrypoint::MCPSettingsTab,
@@ -2710,6 +2793,10 @@ impl TypedActionView for SettingsView {
                 }
             }
             SettingsAction::MainPageToggle(main_page_action) => {
+                if ChannelState::is_terminal_only() {
+                    return;
+                }
+
                 if let Some(main_page) = self.settings_page(SettingsSection::Account)
                     && let SettingsPageViewHandle::Main(view) = &main_page.view_handle
                 {
@@ -2746,6 +2833,10 @@ impl TypedActionView for SettingsView {
                 }
             }
             SettingsAction::AI(ai_action) => {
+                if ChannelState::is_terminal_only() {
+                    return;
+                }
+
                 if let Some(ai_page) = self.settings_page(SettingsSection::AI)
                     && let SettingsPageViewHandle::AI(view) = &ai_page.view_handle
                 {
@@ -2755,6 +2846,10 @@ impl TypedActionView for SettingsView {
                 }
             }
             SettingsAction::Code(code_action) => {
+                if ChannelState::is_terminal_only() {
+                    return;
+                }
+
                 if let Some(code_page) = self.settings_page(SettingsSection::Code)
                     && let SettingsPageViewHandle::Code(view) = &code_page.view_handle
                 {
@@ -2764,6 +2859,10 @@ impl TypedActionView for SettingsView {
                 }
             }
             SettingsAction::WarpDrive(warp_drive_action) => {
+                if ChannelState::is_terminal_only() {
+                    return;
+                }
+
                 if let Some(warp_drive_page) = self.settings_page(SettingsSection::WarpDrive)
                     && let SettingsPageViewHandle::WarpDrive(view) = &warp_drive_page.view_handle
                 {
@@ -2773,6 +2872,10 @@ impl TypedActionView for SettingsView {
                 }
             }
             SettingsAction::WarpifyPageToggle(warpify_action) => {
+                if ChannelState::is_terminal_only() {
+                    return;
+                }
+
                 if let Some(warpify_page) = self.settings_page(SettingsSection::Warpify)
                     && let SettingsPageViewHandle::Warpify(view) = &warpify_page.view_handle
                 {

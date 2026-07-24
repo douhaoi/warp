@@ -7,7 +7,9 @@ use integration::Builder;
 use integration::test::*;
 use warp_cli::WorkerCommand;
 use warp_core::AppId;
-use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpServerConfig};
+use warp_core::channel::{
+    Channel, ChannelConfig, ChannelState, OzConfig, ProductProfile, WarpServerConfig,
+};
 
 /// The Warp integration test runner.
 #[derive(Debug, Default, Parser, Clone)]
@@ -56,6 +58,7 @@ pub fn main() -> Result<()> {
             crash_reporting_config: None,
             autoupdate_config: None,
             mcp_static_config: None,
+            product_profile: ProductProfile::Full,
         },
     ));
 

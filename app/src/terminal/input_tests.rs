@@ -116,6 +116,45 @@ use crate::{
 };
 
 #[test]
+fn normalize_input_config_for_profile_preserves_full_and_locks_terminal_only() {
+    let ai_unlocked = InputConfig {
+        input_type: InputType::AI,
+        is_locked: false,
+    };
+
+    assert_eq!(
+        normalize_input_config_for_profile(crate::channel::ProductProfile::Full, ai_unlocked),
+        ai_unlocked
+    );
+    assert_eq!(
+        normalize_input_config_for_profile(
+            crate::channel::ProductProfile::TerminalOnly,
+            ai_unlocked,
+        ),
+        InputConfig {
+            input_type: InputType::Shell,
+            is_locked: true,
+        }
+    );
+}
+
+#[test]
+fn image_attachment_profile_eligibility_preserves_cli_agent_rich_input() {
+    assert!(can_attach_images_for_profile(
+        crate::channel::ProductProfile::Full,
+        false,
+    ));
+    assert!(!can_attach_images_for_profile(
+        crate::channel::ProductProfile::TerminalOnly,
+        false,
+    ));
+    assert!(can_attach_images_for_profile(
+        crate::channel::ProductProfile::TerminalOnly,
+        true,
+    ));
+}
+
+#[test]
 fn renders_git_checkout_prompt_chip_command_as_single_shell_argument() {
     let command = PromptChipShellCommand::GitCheckout {
         branch_name: "poc;id>/tmp/proof $(whoami) `id` | cat 'tail'".to_string(),

@@ -1423,9 +1423,10 @@ impl AppearanceSettingsPageView {
             window_settings_widgets.push(Box::new(ZoomLevelWidget));
         }
 
-        if window_settings
-            .left_panel_visibility_across_tabs
-            .is_supported_on_current_platform()
+        if !ChannelState::is_terminal_only()
+            && window_settings
+                .left_panel_visibility_across_tabs
+                .is_supported_on_current_platform()
         {
             window_settings_widgets.push(Box::new(ToolsPanelStateScopeWidget::default()));
         }
@@ -1434,28 +1435,30 @@ impl AppearanceSettingsPageView {
             categories.push(Category::new("Window", window_settings_widgets));
         }
 
-        // Tools panel tab visibility toggles. These control which of the four
-        // tabs appear in the tools panel and mirror the onboarding "Customize
-        // your UI" tools-panel selection (see `crates/onboarding`); each toggle
-        // points at the same backing setting as onboarding so the two surfaces
-        // stay in sync, and the tools panel already recomputes its available
-        // views live when these settings change (see `Workspace::new`).
-        // Each toggle is gated only on compile-time / feature-flag availability
-        // of the corresponding tab (not on transient login/AI state), so the
-        // section stays stable regardless of when the page is built.
-        let mut tools_panel_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![];
-        if cfg!(feature = "local_fs") {
-            tools_panel_widgets.push(Box::new(ToolsPanelProjectExplorerWidget::default()));
-        }
-        if FeatureFlag::AgentViewConversationListView.is_enabled() {
-            tools_panel_widgets.push(Box::new(ToolsPanelConversationHistoryWidget::default()));
-        }
-        if cfg!(feature = "local_fs") && FeatureFlag::GlobalSearch.is_enabled() {
-            tools_panel_widgets.push(Box::new(ToolsPanelGlobalSearchWidget::default()));
-        }
-        tools_panel_widgets.push(Box::new(ToolsPanelWarpDriveWidget::default()));
-        if !tools_panel_widgets.is_empty() {
-            categories.push(Category::new("Tools panel", tools_panel_widgets));
+        if !ChannelState::is_terminal_only() {
+            // Tools panel tab visibility toggles. These control which of the four
+            // tabs appear in the tools panel and mirror the onboarding "Customize
+            // your UI" tools-panel selection (see `crates/onboarding`); each toggle
+            // points at the same backing setting as onboarding so the two surfaces
+            // stay in sync, and the tools panel already recomputes its available
+            // views live when these settings change (see `Workspace::new`).
+            // Each toggle is gated only on compile-time / feature-flag availability
+            // of the corresponding tab (not on transient login/AI state), so the
+            // section stays stable regardless of when the page is built.
+            let mut tools_panel_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![];
+            if cfg!(feature = "local_fs") {
+                tools_panel_widgets.push(Box::new(ToolsPanelProjectExplorerWidget::default()));
+            }
+            if FeatureFlag::AgentViewConversationListView.is_enabled() {
+                tools_panel_widgets.push(Box::new(ToolsPanelConversationHistoryWidget::default()));
+            }
+            if cfg!(feature = "local_fs") && FeatureFlag::GlobalSearch.is_enabled() {
+                tools_panel_widgets.push(Box::new(ToolsPanelGlobalSearchWidget::default()));
+            }
+            tools_panel_widgets.push(Box::new(ToolsPanelWarpDriveWidget::default()));
+            if !tools_panel_widgets.is_empty() {
+                categories.push(Category::new("Tools panel", tools_panel_widgets));
+            }
         }
 
         // Create the Input category with all widgets
@@ -1487,11 +1490,12 @@ impl AppearanceSettingsPageView {
         categories.push(Category::new("Blocks", block_settings_widgets));
 
         let font_settings = FontSettings::as_ref(ctx);
-        let mut text_settings_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> = vec![
-            Box::new(TerminalFontWidget::default()),
-            Box::new(AIFontWidget::default()),
-            Box::new(NotebookFontSizeWidget::default()),
-        ];
+        let mut text_settings_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
+            vec![Box::new(TerminalFontWidget::default())];
+        if !ChannelState::is_terminal_only() {
+            text_settings_widgets.push(Box::new(AIFontWidget::default()));
+            text_settings_widgets.push(Box::new(NotebookFontSizeWidget::default()));
+        }
         if font_settings
             .use_thin_strokes
             .is_supported_on_current_platform()
@@ -1526,7 +1530,8 @@ impl AppearanceSettingsPageView {
         let tab_settings = TabSettings::as_ref(ctx);
         let mut tab_settings_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
             vec![Box::new(TabIndicatorWidget::default())];
-        if !FeatureFlag::OpenWarpNewSettingsModes.is_enabled() {
+        if !ChannelState::is_terminal_only() && !FeatureFlag::OpenWarpNewSettingsModes.is_enabled()
+        {
             tab_settings_widgets.push(Box::new(CodeReviewButtonWidget::default()));
         }
         if FeatureFlag::FullScreenZenMode.is_enabled()
@@ -1549,9 +1554,11 @@ impl AppearanceSettingsPageView {
             tab_settings_widgets.push(Box::new(
                 HideTitleBarSearchBarInVerticalTabsWidget::default(),
             ));
-            tab_settings_widgets.push(Box::new(
-                UseLatestUserPromptAsConversationTitleInTabNamesWidget::default(),
-            ));
+            if !ChannelState::is_terminal_only() {
+                tab_settings_widgets.push(Box::new(
+                    UseLatestUserPromptAsConversationTitleInTabNamesWidget::default(),
+                ));
+            }
             if FeatureFlag::ConfigurableToolbar.is_enabled() {
                 tab_settings_widgets.push(Box::new(EditToolbarWidget));
             }

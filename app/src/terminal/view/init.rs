@@ -256,7 +256,8 @@ pub fn init(app: &mut AppContext) {
                     & (!id!(flags::AGENT_VIEW_ENABLED)
                         | id!(flags::ACTIVE_AGENT_VIEW)
                         | id!(flags::ACTIVE_INLINE_AGENT_VIEW)),
-            ),
+            )
+            .with_enabled(|| !ChannelState::is_terminal_only()),
         ]);
     }
 
@@ -1165,7 +1166,7 @@ fn register_input_mode_bindings(app: &mut AppContext) {
             },
             agent_conversation_predicate.clone() & !command_predicate.clone(),
         )
-        .with_enabled(|| FeatureFlag::AgentView.is_enabled()),
+        .with_enabled(|| FeatureFlag::AgentView.is_enabled() && !ChannelState::is_terminal_only()),
         FixedBinding::new_per_platform(
             PerPlatformKeystroke {
                 mac: "cmd-enter",
@@ -1174,7 +1175,7 @@ fn register_input_mode_bindings(app: &mut AppContext) {
             TerminalAction::SetInputModeAgent,
             agent_conversation_predicate & agent_mode_predicate.clone() & command_predicate,
         )
-        .with_enabled(|| FeatureFlag::AgentView.is_enabled()),
+        .with_enabled(|| FeatureFlag::AgentView.is_enabled() && !ChannelState::is_terminal_only()),
     ]);
 
     app.register_editable_bindings([
@@ -1186,7 +1187,8 @@ fn register_input_mode_bindings(app: &mut AppContext) {
         .with_group(bindings::BindingGroup::WarpAi.as_str())
         .with_context_predicate(agent_mode_predicate)
         .with_mac_key_binding("cmd-i")
-        .with_linux_or_windows_key_binding("ctrl-i"),
+        .with_linux_or_windows_key_binding("ctrl-i")
+        .with_enabled(|| !ChannelState::is_terminal_only()),
         EditableBinding::new(
             SET_INPUT_MODE_TERMINAL_ACTION_NAME,
             "Set Input Mode to Terminal Mode",

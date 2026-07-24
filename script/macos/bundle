@@ -100,6 +100,7 @@ DMG_NAME_SUFFIX=""
 # By default we build dev bundles.
 RELEASE_CHANNEL="dev"
 FEATURES="release_bundle,cocoa_sentry,extern_plist"
+ADDITIONAL_FEATURES=""
 REGISTER_SERVICES=true
 DEBUG=false
 ARTIFACT="app"
@@ -214,7 +215,7 @@ while (( "$#" )); do
     --features)
       if [ -n "$2" ] && [ "${2:0:1}" != "-" ]; then
         echo "Adding Cargo features: $2"
-        FEATURES="$FEATURES,$2"
+        ADDITIONAL_FEATURES="${ADDITIONAL_FEATURES:+$ADDITIONAL_FEATURES,}$2"
         shift 2
       else
         echo "Error: Argument for $1 is missing" >&2
@@ -320,6 +321,10 @@ elif [[ $RELEASE_CHANNEL = "oss" ]]; then
     # The OSS channel does not ship Sentry, so drop the cocoa_sentry feature
     # (which would otherwise pull in the Sentry framework dependency).
     FEATURES="release_bundle,extern_plist"
+fi
+
+if [[ -n "$ADDITIONAL_FEATURES" ]]; then
+    FEATURES="$FEATURES,$ADDITIONAL_FEATURES"
 fi
 
 OUT_DIR="target/$TARGET_PROFILE_DIR/bundle/osx"

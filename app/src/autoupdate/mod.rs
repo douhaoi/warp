@@ -135,6 +135,10 @@ impl AutoupdateState {
     /// Must be called explicitly once onboarding (if any) has completed. For returning users
     /// who bypass onboarding, this should be called during app startup.
     pub fn start_polling(&mut self, ctx: &mut ModelContext<Self>) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         if self.polling_started {
             return;
         }

@@ -8,8 +8,8 @@ use url::{Origin, ParseError, Url};
 use super::Channel;
 use crate::AppId;
 use crate::channel::config::{
-    ChannelConfig, IapConfig, McpOAuthProviderConfig, OzConfig, RudderStackDestination,
-    WarpServerConfig,
+    ChannelConfig, IapConfig, McpOAuthProviderConfig, OzConfig, ProductProfile,
+    RudderStackDestination, WarpServerConfig,
 };
 use crate::features::FeatureFlag;
 
@@ -50,6 +50,7 @@ impl ChannelState {
                 autoupdate_config: None,
                 crash_reporting_config: None,
                 mcp_static_config: None,
+                product_profile: ProductProfile::Full,
             },
         }
     }
@@ -327,6 +328,14 @@ impl ChannelState {
 
     pub fn channel() -> Channel {
         CHANNEL_STATE.lock().channel
+    }
+
+    pub fn product_profile() -> ProductProfile {
+        CHANNEL_STATE.lock().config.product_profile
+    }
+
+    pub fn is_terminal_only() -> bool {
+        Self::product_profile() == ProductProfile::TerminalOnly
     }
 
     #[cfg(feature = "test-util")]

@@ -2,7 +2,9 @@ use anyhow::Result;
 use clap::Parser;
 use warp_cli::WorkerCommand;
 use warp_core::AppId;
-use warp_core::channel::{Channel, ChannelConfig, ChannelState, OzConfig, WarpServerConfig};
+use warp_core::channel::{
+    Channel, ChannelConfig, ChannelState, OzConfig, ProductProfile, WarpServerConfig,
+};
 
 #[derive(Debug, Default, Parser, Clone)]
 #[command(name = "warp-integration")]
@@ -45,6 +47,7 @@ pub fn main() -> Result<()> {
             crash_reporting_config: None,
             autoupdate_config: None,
             mcp_static_config: None,
+            product_profile: ProductProfile::Full,
         },
     ));
 
