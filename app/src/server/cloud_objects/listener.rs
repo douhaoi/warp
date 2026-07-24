@@ -10,6 +10,7 @@ use warpui::r#async::Timer;
 use warpui::{Entity, ModelContext, ModelHandle, RequestState, SingletonEntity};
 
 use super::update_manager::UpdateManager;
+use crate::channel::{ChannelState, ProductProfile};
 use crate::cloud_object::model::persistence::{CloudModel, CloudModelEvent};
 use crate::network::{NetworkStatus, NetworkStatusEvent, NetworkStatusKind};
 use crate::server::retry_strategies::LISTENER_RETRY_STRATEGY;
@@ -36,6 +37,10 @@ const RECONNECTION_REFRESH_THRESHOLD: Duration = Duration::from_secs(60);
 /// Spreading out requests across this window helps avoid a thundering herd when many clients
 /// reconnect simultaneously (e.g. after a server release).
 const MAX_RECONNECTION_REFRESH_DELAY: Duration = Duration::from_secs(30);
+
+fn listener_is_enabled_for_profile(product_profile: ProductProfile) -> bool {
+    product_profile == ProductProfile::Full
+}
 
 /// Describes the type of websocket connection that was just established.
 enum ConnectionEvent {
@@ -74,6 +79,10 @@ pub struct Listener {
 
 impl Listener {
     pub fn new(cloud_objects_client: Arc<dyn ObjectClient>, ctx: &mut ModelContext<Self>) -> Self {
+        if !listener_is_enabled_for_profile(ChannelState::product_profile()) {
+            return Self::new_disabled(cloud_objects_client);
+        }
+
         let (subscription_ready_tx, subscription_ready_rx) = async_channel::unbounded();
         let mut listener = Self {
             cloud_objects_client,
@@ -121,6 +130,21 @@ impl Listener {
         }
 
         listener
+    }
+
+    /// Constructs the singleton without registering subscriptions or starting any cloud work.
+    /// TerminalOnly retains the Listener type contract while intentionally having no WebSocket
+    /// lifecycle to drive.
+    fn new_disabled(cloud_objects_client: Arc<dyn ObjectClient>) -> Self {
+        let (subscription_ready_tx, _subscription_ready_rx) = async_channel::unbounded();
+        Self {
+            cloud_objects_client,
+            should_subscribe_to_updates: false,
+            current_subscription_abort_handle: None,
+            subscription_ready_tx,
+            last_disconnected_at: None,
+            pending_refresh_abort_handle: None,
+        }
     }
 
     #[cfg(test)]
@@ -233,6 +257,10 @@ impl Listener {
     }
 
     fn start_listener(&mut self, ctx: &mut ModelContext<Self>) {
+        if !listener_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         if !self.should_subscribe_to_updates {
             self.should_subscribe_to_updates = true;
             self.get_warp_drive_updates(ctx);
@@ -301,6 +329,10 @@ impl Listener {
     }
 
     fn get_warp_drive_updates(&mut self, ctx: &mut ModelContext<Self>) {
+        if !listener_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         let object_client = self.cloud_objects_client.clone();
         let (message_sender, message_receiver) = async_channel::unbounded();
         let subscription_ready_tx = self.subscription_ready_tx.clone();
@@ -388,3 +420,22 @@ impl Entity for Listener {
 }
 
 impl SingletonEntity for Listener {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn listener_profile_eligibility_preserves_full_and_disables_terminal_only() {
+        for (profile, listener_is_enabled) in [
+            (ProductProfile::Full, true),
+            (ProductProfile::TerminalOnly, false),
+        ] {
+            assert_eq!(
+                listener_is_enabled_for_profile(profile),
+                listener_is_enabled,
+                "unexpected listener eligibility for {profile:?}"
+            );
+        }
+    }
+}

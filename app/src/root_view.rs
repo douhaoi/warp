@@ -56,6 +56,7 @@ use crate::auth::web_handoff::{WebHandoffEvent, WebHandoffView};
 use crate::auth::{AuthStateProvider, LoginFailureReason};
 use crate::autoupdate::{AutoupdateState, AutoupdateStateEvent, RequestType, UpdateReady};
 use crate::changelog_model::ChangelogRequestType;
+use crate::channel::ProductProfile;
 use crate::cloud_object::model::persistence::CloudModel;
 use crate::cloud_object::{GenericStringObjectFormat, JsonObjectType, ObjectType};
 use crate::drive::export::ExportManager;
@@ -105,6 +106,10 @@ use crate::{
 };
 
 const WINDOW_TITLE: &str = "Warp";
+
+pub(crate) fn can_access_team_features_for_profile(product_profile: ProductProfile) -> bool {
+    product_profile == ProductProfile::Full
+}
 
 lazy_static! {
     static ref FALLBACK_WINDOW_SIZE: Vector2F = vec2f(800.0, 600.0);
@@ -2794,6 +2799,10 @@ impl RootView {
     /// Shows the user the settings view of their newly joined team
     /// within the app.
     pub fn handle_team_intent_link_action(&mut self, _: &(), ctx: &mut ViewContext<Self>) -> bool {
+        if !can_access_team_features_for_profile(ChannelState::product_profile()) {
+            return true;
+        }
+
         // Force-open warp drive.
         let window_id = ctx.window_id();
         if let AuthOnboardingState::Terminal(handle) = &self.auth_onboarding_state {
@@ -2815,6 +2824,10 @@ impl RootView {
     }
 
     pub fn open_team_settings_page(&mut self, _: &(), ctx: &mut ViewContext<Self>) -> bool {
+        if !can_access_team_features_for_profile(ChannelState::product_profile()) {
+            return true;
+        }
+
         let window_id = ctx.window_id();
         if let AuthOnboardingState::Terminal(handle) = &self.auth_onboarding_state {
             ctx.dispatch_typed_action_for_view(

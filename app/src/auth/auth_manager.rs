@@ -7,7 +7,7 @@ use settings::Setting as _;
 #[cfg(target_family = "wasm")]
 use url::Url;
 use uuid::Uuid;
-use warp_core::channel::ChannelState;
+use warp_core::channel::{ChannelState, ProductProfile};
 use warp_core::features::FeatureFlag;
 use warp_errors::{report_error, report_if_error};
 use warp_graphql::mutations::create_anonymous_user::{
@@ -86,6 +86,27 @@ pub enum AuthManagerEvent {
 pub type LoginGatedFeature = &'static str;
 
 type URLConstructorCallback = Box<dyn FnOnce(Option<&str>) -> String>;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct AuthenticatedUserProfilePolicy {
+    starts_cloud_and_ai_background_work: bool,
+    rejoins_shared_sessions: bool,
+}
+
+fn authenticated_user_profile_policy(
+    product_profile: ProductProfile,
+) -> AuthenticatedUserProfilePolicy {
+    match product_profile {
+        ProductProfile::Full => AuthenticatedUserProfilePolicy {
+            starts_cloud_and_ai_background_work: true,
+            rejoins_shared_sessions: true,
+        },
+        ProductProfile::TerminalOnly => AuthenticatedUserProfilePolicy {
+            starts_cloud_and_ai_background_work: false,
+            rejoins_shared_sessions: false,
+        },
+    }
+}
 
 /// AuthManager is a singleton model which manages the currently logged-in user's state.
 /// If you need to access the state, use `AuthStateProvider`.
@@ -358,39 +379,43 @@ impl AuthManager {
                     initializer.handle_user_fetched(self.auth_state.clone(), ctx);
                 });
 
-                // Reset the initial-load condition so that any cloud preference
-                // sync waits for the *new* user's cloud objects rather than
-                // resolving immediately against stale data from a prior session.
-                // Only do this for non-refresh fetches (login/signup), not for
-                // token refreshes where the user identity hasn't changed.
-                if !from_refresh {
-                    UpdateManager::handle(ctx).update(ctx, |manager, _| {
-                        manager.reset_initial_load();
+                let profile_policy =
+                    authenticated_user_profile_policy(ChannelState::product_profile());
+                if profile_policy.starts_cloud_and_ai_background_work {
+                    // Reset the initial-load condition so that any cloud preference
+                    // sync waits for the *new* user's cloud objects rather than
+                    // resolving immediately against stale data from a prior session.
+                    // Only do this for non-refresh fetches (login/signup), not for
+                    // token refreshes where the user identity hasn't changed.
+                    if !from_refresh {
+                        UpdateManager::handle(ctx).update(ctx, |manager, _| {
+                            manager.reset_initial_load();
+                        });
+                    }
+
+                    // Now that we have a user, start polling for team and cloud object information.
+                    // The polling loop's first tick fires immediately, so there is no need for a
+                    // separate out-of-band refresh here.
+                    TeamTesterStatus::handle(ctx).update(ctx, |model, ctx| {
+                        model.initiate_data_pollers(false, ctx);
+                    });
+
+                    CloudPreferencesSyncer::handle(ctx).update(ctx, |model, ctx| {
+                        model.handle_user_fetched(self.auth_state.clone(), ctx)
+                    });
+
+                    AIRequestUsageModel::handle(ctx).update(ctx, |usage_model, ctx| {
+                        usage_model.refresh_request_usage_async(ctx);
+                    });
+
+                    LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
+                        prefs.update_feature_model_choices(Ok(llms), ctx);
+                    });
+
+                    PersistedWorkspace::handle(ctx).update(ctx, |index_manager_updater, ctx| {
+                        index_manager_updater.on_user_changed(ctx);
                     });
                 }
-
-                // Now that we have a user, start polling for team and cloud object information.
-                // The polling loop's first tick fires immediately, so there is no need for a
-                // separate out-of-band refresh here.
-                TeamTesterStatus::handle(ctx).update(ctx, |model, ctx| {
-                    model.initiate_data_pollers(false, ctx);
-                });
-
-                CloudPreferencesSyncer::handle(ctx).update(ctx, |model, ctx| {
-                    model.handle_user_fetched(self.auth_state.clone(), ctx)
-                });
-
-                AIRequestUsageModel::handle(ctx).update(ctx, |usage_model, ctx| {
-                    usage_model.refresh_request_usage_async(ctx);
-                });
-
-                LLMPreferences::handle(ctx).update(ctx, |prefs, ctx| {
-                    prefs.update_feature_model_choices(Ok(llms), ctx);
-                });
-
-                PersistedWorkspace::handle(ctx).update(ctx, |index_manager_updater, ctx| {
-                    index_manager_updater.on_user_changed(ctx);
-                });
 
                 if !user.is_user_anonymous() {
                     GeneralSettings::handle(ctx).update(ctx, |settings, ctx| {
@@ -404,7 +429,9 @@ impl AuthManager {
                 if !from_refresh {
                     SharedSessionManager::handle(ctx).update(ctx, |manager, ctx| {
                         manager.stop_all_shared_sessions(ctx);
-                        manager.rejoin_all_shared_sessions(ctx);
+                        if profile_policy.rejoins_shared_sessions {
+                            manager.rejoin_all_shared_sessions(ctx);
+                        }
                     });
                 }
 

@@ -1,9 +1,13 @@
 use warp_core::user_preferences::GetUserPreferences as _;
 use warpui::{App, SingletonEntity};
 
-use super::{HAS_COMPLETED_ONBOARDING_KEY, RootView, has_completed_local_onboarding};
+use super::{
+    HAS_COMPLETED_ONBOARDING_KEY, RootView, can_access_team_features_for_profile,
+    has_completed_local_onboarding,
+};
 use crate::auth::AuthStateProvider;
 use crate::auth::auth_manager::AuthManager;
+use crate::channel::ProductProfile;
 use crate::server::server_api::ServerApiProvider;
 
 fn initialize_app(app: &mut App) {
@@ -22,6 +26,16 @@ fn set_local_onboarding_completed(app: &mut App, completed: bool) {
             )
             .unwrap();
     });
+}
+
+#[test]
+fn team_feature_profile_eligibility_preserves_full_and_disables_terminal_only() {
+    for (profile, can_handle) in [
+        (ProductProfile::Full, true),
+        (ProductProfile::TerminalOnly, false),
+    ] {
+        assert_eq!(can_access_team_features_for_profile(profile), can_handle);
+    }
 }
 
 /// Regression test for the bug fixed by introducing

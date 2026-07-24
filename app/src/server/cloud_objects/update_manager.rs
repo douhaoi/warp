@@ -40,6 +40,7 @@ use crate::ai::facts::{AIFact, CloudAIFactModel};
 use crate::ai::mcp::templatable::{CloudTemplatableMCPServerModel, TemplatableMCPServer};
 use crate::auth::AuthStateProvider;
 use crate::auth::auth_manager::AuthManager;
+use crate::channel::ChannelState;
 use crate::cloud_object::model::actions::{
     ObjectAction, ObjectActionHistory, ObjectActionType, ObjectActions,
 };
@@ -87,7 +88,7 @@ use crate::workflows::workflow::Workflow;
 use crate::workflows::workflow_enum::{CloudWorkflowEnum, CloudWorkflowEnumModel, WorkflowEnum};
 use crate::workflows::{CloudWorkflowModel, WorkflowId};
 use crate::workspaces::team_tester::{TeamTesterStatus, TeamTesterStatusEvent};
-use crate::workspaces::update_manager::TeamUpdateManager;
+use crate::workspaces::update_manager::{TeamUpdateManager, polling_is_enabled_for_profile};
 use crate::workspaces::user_profiles::{UserProfileWithUID, UserProfiles};
 use crate::workspaces::user_workspaces::UserWorkspaces;
 
@@ -310,6 +311,10 @@ impl UpdateManager {
         event: &TeamTesterStatusEvent,
         ctx: &mut ModelContext<Self>,
     ) {
+        if !polling_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         let TeamTesterStatusEvent::InitiateDataPollers { force_refresh } = event;
         if *force_refresh {
             self.refresh_updated_objects(ctx);
@@ -624,6 +629,10 @@ impl UpdateManager {
     }
 
     pub fn start_polling_for_updated_objects(&mut self, ctx: &mut ModelContext<Self>) {
+        if !polling_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         let is_online = NetworkStatus::as_ref(ctx).is_online();
 
         if !self.should_poll_for_updated_objects && is_online {
@@ -634,6 +643,10 @@ impl UpdateManager {
 
     /// Out-of-band (from the regular poll) refresh of updated objects.
     pub fn refresh_updated_objects(&mut self, ctx: &mut ModelContext<Self>) {
+        if !polling_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         let object_client = self.object_client.clone();
         let cloud_model = CloudModel::as_ref(ctx);
         let versions_for_all_objects = cloud_model.get_versions_for_all_objects(ctx);
@@ -677,6 +690,10 @@ impl UpdateManager {
     }
 
     fn poll_for_updated_objects(&mut self, ctx: &mut ModelContext<Self>) {
+        if !polling_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         self.abort_existing_poll();
 
         if !self.should_poll_for_updated_objects {

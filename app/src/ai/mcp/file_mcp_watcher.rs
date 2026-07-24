@@ -21,6 +21,7 @@ use watcher::HomeDirectoryWatcherEvent;
 use crate::HomeDirectoryWatcher;
 use crate::ai::mcp::parsing::normalize_codex_toml_to_json;
 use crate::ai::mcp::{MCPProvider, ParsedTemplatableMCPServerResult, home_config_file_path};
+use crate::channel::{ChannelState, ProductProfile};
 use crate::warp_managed_paths_watcher::{
     WarpManagedPathsWatcher, WarpManagedPathsWatcherEvent, warp_managed_mcp_config_path,
 };
@@ -32,6 +33,10 @@ static ENV_VAR_REGEX: LazyLock<Regex> =
 /// `.warp/.mcp.json`), capturing the parent directory component.
 static HOME_SUBDIR_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^([^/]+)/[^/]+$").expect("Regex is valid"));
+
+fn file_mcp_watching_is_enabled_for_profile(product_profile: ProductProfile) -> bool {
+    product_profile == ProductProfile::Full
+}
 
 /// Returns the subdirectory under the home directory that needs its own [`DirectoryWatcher`],
 /// inferred from the provider's home config path. Matches paths that are exactly one directory
@@ -138,6 +143,10 @@ pub struct FileMCPWatcher {
 
 impl FileMCPWatcher {
     pub fn new(ctx: &mut ModelContext<Self>) -> Self {
+        if !file_mcp_watching_is_enabled_for_profile(ChannelState::product_profile()) {
+            return Self::new_disabled();
+        }
+
         let (file_mcp_tx, file_mcp_rx) = async_channel::unbounded::<FileMCPDetectionMessage>();
         let is_tui = settings::settings_mode() == settings::SettingsMode::Tui;
 
@@ -237,8 +246,29 @@ impl FileMCPWatcher {
         watcher
     }
 
+    /// Constructs the singleton without a stream, subscriptions, config scans, or directory
+    /// watchers. TerminalOnly retains the watcher and its event subscription contract, but has no
+    /// file-based MCP discovery lifecycle to drive.
+    fn new_disabled() -> Self {
+        // The sender is only handed to repository subscribers, and TerminalOnly intentionally
+        // registers none. Keeping it here preserves the model shape without a receiver that can
+        // produce work or an error for a caller.
+        let (file_mcp_tx, _file_mcp_rx) = async_channel::unbounded();
+        Self {
+            file_mcp_tx,
+            parse_abort_handles: HashMap::new(),
+            home_provider_watchers: HashMap::new(),
+            project_repo_watchers: HashSet::new(),
+            cloud_env_pending: HashMap::new(),
+        }
+    }
+
     #[cfg(feature = "tui")]
     pub fn reload_global_config(&mut self, ctx: &mut ModelContext<Self>) {
+        if !file_mcp_watching_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         let Some(config) = warp_managed_mcp_config_path() else {
             return;
         };
@@ -257,6 +287,10 @@ impl FileMCPWatcher {
         ctx: &mut ModelContext<Self>,
         file_mcp_tx: Sender<FileMCPDetectionMessage>,
     ) {
+        if !file_mcp_watching_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         if self.project_repo_watchers.contains(&repo_path) {
             return;
         }
@@ -303,6 +337,10 @@ impl FileMCPWatcher {
         home_provider_watchers: &mut HashMap<PathBuf, (ModelHandle<Repository>, SubscriberId)>,
         ctx: &mut ModelContext<Self>,
     ) {
+        if !file_mcp_watching_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         // If the subdir is already being watched, return early.
         if home_provider_watchers.contains_key(subdir_path) {
             return;
@@ -580,6 +618,10 @@ impl FileMCPWatcher {
         provider: MCPProvider,
         ctx: &mut ModelContext<Self>,
     ) {
+        if !file_mcp_watching_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         let config_file_path = config_file_path.to_path_buf();
         let key = (config_file_path.clone(), provider);
         let callback_key = key.clone();

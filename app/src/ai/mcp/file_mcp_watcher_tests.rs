@@ -5,10 +5,21 @@ use std::path::PathBuf;
 use futures::stream::AbortHandle;
 
 use super::{
-    FileMCPConfigDiagnosticKind, FileMCPConfigParseOutcome, FileMCPWatcher, parse_mcp_config_file,
-    substitute_env_vars,
+    FileMCPConfigDiagnosticKind, FileMCPConfigParseOutcome, FileMCPWatcher,
+    file_mcp_watching_is_enabled_for_profile, parse_mcp_config_file, substitute_env_vars,
 };
 use crate::ai::mcp::MCPProvider;
+use crate::channel::ProductProfile;
+
+#[test]
+fn file_mcp_watching_profile_eligibility_preserves_full_and_disables_terminal_only() {
+    assert!(file_mcp_watching_is_enabled_for_profile(
+        ProductProfile::Full
+    ));
+    assert!(!file_mcp_watching_is_enabled_for_profile(
+        ProductProfile::TerminalOnly
+    ));
+}
 
 fn cleanup_env_vars(vars: &[&str]) {
     for var in vars {

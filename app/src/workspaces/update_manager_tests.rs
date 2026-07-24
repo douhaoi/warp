@@ -5,6 +5,7 @@ use warpui::{AddSingletonModel, App};
 
 use super::*;
 use crate::auth::AuthManager;
+use crate::channel::ProductProfile;
 use crate::cloud_object::model::actions::ObjectActions;
 use crate::cloud_object::model::persistence::CloudModel;
 use crate::cloud_object::{Owner, Revision, ServerMetadata, ServerPermissions, ServerWorkflow};
@@ -21,6 +22,20 @@ use crate::workflows::{CloudWorkflow, CloudWorkflowModel, WorkflowId};
 use crate::workspaces::team::Team;
 use crate::workspaces::user_profiles::UserProfiles;
 use crate::workspaces::workspace::{Workspace, WorkspaceUid};
+
+#[test]
+fn polling_profile_eligibility_preserves_full_and_disables_terminal_only() {
+    for (profile, polling_is_enabled) in [
+        (ProductProfile::Full, true),
+        (ProductProfile::TerminalOnly, false),
+    ] {
+        assert_eq!(
+            polling_is_enabled_for_profile(profile),
+            polling_is_enabled,
+            "unexpected polling eligibility for {profile:?}"
+        );
+    }
+}
 
 fn initialize_app(
     team_client: Arc<dyn TeamClient>,

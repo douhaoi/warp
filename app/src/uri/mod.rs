@@ -30,8 +30,8 @@ use crate::features::FeatureFlag;
 use crate::launch_configs::launch_config::LaunchConfig;
 use crate::linear::{LinearAction, LinearIssueWork};
 use crate::root_view::{
-    NewWorkspaceSource, OpenLaunchConfigArg, open_new_window_get_handles,
-    open_new_with_workspace_source,
+    NewWorkspaceSource, OpenLaunchConfigArg, can_access_team_features_for_profile,
+    open_new_window_get_handles, open_new_with_workspace_source,
 };
 use crate::server::ids::ServerId;
 use crate::server::telemetry::{LaunchConfigUiLocation, TelemetryEvent};
@@ -1242,6 +1242,12 @@ pub fn handle_incoming_uri(url: &Url, ctx: &mut AppContext) {
 
     match validate_custom_uri(url) {
         Ok(host) => {
+            if host == UriHost::Team
+                && !can_access_team_features_for_profile(ChannelState::product_profile())
+            {
+                return;
+            }
+
             #[cfg(any(target_os = "linux", target_os = "freebsd", windows))]
             let primary_window_id = host.window_behavior_hint().resolve(primary_window_id, ctx);
             host.handle(primary_window_id, url, ctx);

@@ -3,18 +3,34 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use warpui::{App, SingletonEntity};
 
-use super::{AuthManager, AuthManagerEvent};
+use super::{AuthManager, AuthManagerEvent, authenticated_user_profile_policy};
 use crate::ServerApiProvider;
 use crate::auth::auth_view_modal::AuthRedirectPayload;
 use crate::auth::credentials::{Credentials, RefreshToken};
 use crate::auth::user::{FirebaseAuthTokens, TEST_USER_UID};
 use crate::auth::{AuthStateProvider, UserUid};
+use crate::channel::ProductProfile;
 use crate::server::server_api::auth::UserAuthenticationError;
 
 fn initialize_app(app: &mut App) {
     app.add_singleton_model(|_ctx| ServerApiProvider::new_for_test());
     app.add_singleton_model(|_| AuthStateProvider::new_for_test());
     app.add_singleton_model(AuthManager::new_for_test);
+}
+
+#[test]
+fn authenticated_user_profile_policy_preserves_full_and_disables_terminal_only_background_work() {
+    for (profile, starts_cloud_and_ai_background_work, rejoins_shared_sessions) in [
+        (ProductProfile::Full, true, true),
+        (ProductProfile::TerminalOnly, false, false),
+    ] {
+        let policy = authenticated_user_profile_policy(profile);
+        assert_eq!(
+            policy.starts_cloud_and_ai_background_work,
+            starts_cloud_and_ai_background_work
+        );
+        assert_eq!(policy.rejoins_shared_sessions, rejoins_shared_sessions);
+    }
 }
 
 /// Subscribes to `AuthManager` events and returns a flag that becomes `true`
