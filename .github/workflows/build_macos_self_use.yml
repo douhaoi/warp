@@ -20,7 +20,7 @@ jobs:
   build:
     name: Build WarpOss (macOS arm64)
     runs-on: macos-15
-    timeout-minutes: 120
+    timeout-minutes: 240
 
     steps:
       - name: Checkout sources
