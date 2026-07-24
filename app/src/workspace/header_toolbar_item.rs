@@ -3,6 +3,7 @@ use settings::Setting as _;
 use warpui::{AppContext, SingletonEntity};
 
 use crate::auth::AuthStateProvider;
+use crate::channel::{ChannelState, ProductProfile};
 use crate::features::FeatureFlag;
 use crate::settings::AISettings;
 use crate::ui_components::icons::Icon;
@@ -34,6 +35,16 @@ pub enum HeaderToolbarItemKind {
 }
 
 impl HeaderToolbarItemKind {
+    pub(crate) fn is_supported_for_profile(&self, product_profile: ProductProfile) -> bool {
+        !matches!(
+            (product_profile, self),
+            (
+                ProductProfile::TerminalOnly,
+                Self::ToolsPanel | Self::CodeReview
+            )
+        )
+    }
+
     pub fn display_label(&self) -> &'static str {
         match self {
             Self::TabsPanel => "Tabs Panel",
@@ -58,6 +69,10 @@ impl HeaderToolbarItemKind {
     /// (feature flags, compile-time features, AI enabled, auth state).
     /// Does not check user show/hide preferences — use `is_available` for that.
     pub fn is_supported(&self, app: &AppContext) -> bool {
+        if !self.is_supported_for_profile(ChannelState::product_profile()) {
+            return false;
+        }
+
         match self {
             Self::TabsPanel => {
                 FeatureFlag::VerticalTabs.is_enabled()

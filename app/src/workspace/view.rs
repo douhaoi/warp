@@ -243,7 +243,7 @@ use crate::billing::shared_objects_creation_denied_modal::{
     SharedObjectsCreationDeniedModal, SharedObjectsCreationDeniedModalEvent,
 };
 use crate::changelog_model::{ChangelogModel, ChangelogRequestType, Event as ChangelogEvent};
-use crate::channel::{Channel, ChannelState};
+use crate::channel::{Channel, ChannelState, ProductProfile};
 use crate::cloud_object::model::persistence::CloudModel;
 use crate::cloud_object::toast_message::CloudObjectToastMessage;
 use crate::cloud_object::{
@@ -983,6 +983,26 @@ pub struct TransferredTab {
     pub right_panel_open: bool,
     pub is_right_panel_maximized: bool,
     pub draggable_state: DraggableState,
+}
+
+fn tools_panel_is_supported_for_profile(product_profile: ProductProfile) -> bool {
+    product_profile != ProductProfile::TerminalOnly
+}
+
+fn is_terminal_only_panel_action_disabled(action: &WorkspaceAction) -> bool {
+    matches!(
+        action,
+        WorkspaceAction::ToggleWarpDrive
+            | WorkspaceAction::OpenWarpDrive
+            | WorkspaceAction::OpenCodeReviewPanel(_)
+            | WorkspaceAction::ToggleProjectExplorer
+            | WorkspaceAction::OpenProjectExplorer
+            | WorkspaceAction::ToggleGlobalSearch
+            | WorkspaceAction::OpenGlobalSearch
+            | WorkspaceAction::ToggleConversationListView
+            | WorkspaceAction::OpenConversationListView
+            | WorkspaceAction::ViewObjectInWarpDrive(_)
+    )
 }
 #[cfg(not(target_family = "wasm"))]
 struct ThirdPartyLocalContinuationLaunch {
@@ -3907,7 +3927,9 @@ impl Workspace {
                 block_lists,
             } => {
                 let active_tab_index = window_snapshot.active_tab_index;
-                let restored_left_panel_open = window_snapshot.left_panel_open;
+                let restored_left_panel_open =
+                    tools_panel_is_supported_for_profile(ChannelState::product_profile())
+                        && window_snapshot.left_panel_open;
 
                 // Restore groups first so per-tab `group_id` assignments
                 // below can validate membership against a populated map.
@@ -4070,10 +4092,14 @@ impl Workspace {
                 if let (Some(color), Some(tab)) = (tab_color, self.tabs.last_mut()) {
                     tab.selected_color = SelectedTabColor::Color(color);
                 }
-                if self.left_panel_visibility_across_tabs_enabled(ctx) {
+                if tools_panel_is_supported_for_profile(ChannelState::product_profile())
+                    && self.left_panel_visibility_across_tabs_enabled(ctx)
+                {
                     self.left_panel_open = left_panel_open;
                 }
-                if right_panel_open {
+                if tools_panel_is_supported_for_profile(ChannelState::product_profile())
+                    && right_panel_open
+                {
                     self.right_panel_view.update(ctx, |rp, ctx| {
                         rp.set_maximized(is_right_panel_maximized, ctx);
                     });
@@ -4099,7 +4125,9 @@ impl Workspace {
                 if let (Some(color), Some(tab)) = (tab_color, self.tabs.last_mut()) {
                     tab.selected_color = SelectedTabColor::Color(color);
                 }
-                if self.left_panel_visibility_across_tabs_enabled(ctx) {
+                if tools_panel_is_supported_for_profile(ChannelState::product_profile())
+                    && self.left_panel_visibility_across_tabs_enabled(ctx)
+                {
                     self.left_panel_open = left_panel_open;
                 }
                 self.pending_pane_group_transfer = true;
@@ -4175,6 +4203,10 @@ impl Workspace {
         left_panel_snapshot: &LeftPanelSnapshot,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         pane_group.update(ctx, |pg, ctx| {
             pg.set_left_panel_open(true, ctx);
         });
@@ -4209,6 +4241,10 @@ impl Workspace {
         right_panel_snapshot: &RightPanelSnapshot,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         pane_group.update(ctx, |pg, _| {
             pg.right_panel_open = true;
             pg.is_right_panel_maximized = right_panel_snapshot.is_maximized;
@@ -4743,7 +4779,9 @@ impl Workspace {
             ctx,
         );
         self.active_tab_pane_group().update(ctx, |pane_group, ctx| {
-            if was_left_panel_open {
+            if tools_panel_is_supported_for_profile(ChannelState::product_profile())
+                && was_left_panel_open
+            {
                 pane_group.set_left_panel_open(true, ctx);
             }
             if let Some(terminal_view) = pane_group.active_session_view(ctx) {
@@ -9188,6 +9226,10 @@ impl Workspace {
     }
 
     fn open_left_panel(&mut self, ctx: &mut ViewContext<Self>) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         self.left_panel_open = true;
 
         let active_pane_group = self.active_tab_pane_group().clone();
@@ -9254,6 +9296,13 @@ impl Workspace {
     fn toggle_left_panel(&mut self, ctx: &mut ViewContext<Self>) {
         let active_pane_group = self.active_tab_pane_group().clone();
 
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            if active_pane_group.as_ref(ctx).left_panel_open {
+                self.close_left_panel(ctx);
+            }
+            return;
+        }
+
         let was_open = active_pane_group.read(ctx, |pane_group, _| pane_group.left_panel_open);
         let new_state = !was_open;
 
@@ -9315,6 +9364,10 @@ impl Workspace {
         context: Option<&CodeReviewPaneContext>,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         // If context is provided, use it directly. Otherwise, derive from active pane group.
         let context_data: Option<(Option<LocalOrRemotePath>, ModelHandle<DiffStateModel>)> =
             if let Some(context) = context {
@@ -9357,6 +9410,10 @@ impl Workspace {
         pane_group: ViewHandle<PaneGroup>,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         // Skip the full panel setup when the panel is already open for the target repo.
         let panel_already_showing_repo = pane_group.as_ref(ctx).right_panel_open
             && panel_context
@@ -9413,6 +9470,12 @@ impl Workspace {
         panel_update_params: RightPanelUpdateParams,
         ctx: &mut ViewContext<Self>,
     ) {
+        if panel_update_params.target_open_state
+            && !tools_panel_is_supported_for_profile(ChannelState::product_profile())
+        {
+            return;
+        }
+
         let should_open = panel_update_params.target_open_state;
         let should_close = !panel_update_params.target_open_state;
 
@@ -9480,6 +9543,13 @@ impl Workspace {
         pane_group_handle: &ViewHandle<PaneGroup>,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            if pane_group_handle.as_ref(ctx).right_panel_open {
+                self.close_right_panel(pane_group_handle, ctx);
+            }
+            return;
+        }
+
         let target_open_state =
             pane_group_handle.read(ctx, |pane_group, _| !pane_group.right_panel_open);
 
@@ -9527,6 +9597,10 @@ impl Workspace {
         cli_agent: Option<crate::terminal::CLIAgent>,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         if pane_group_handle.as_ref(ctx).right_panel_open {
             if let Some(repo_path) = &context.repo_path {
                 self.right_panel_view.update(ctx, |right_panel, ctx| {
@@ -11650,6 +11724,10 @@ impl Workspace {
         left_panel_width: Option<f32>,
         app: &AppContext,
     ) -> Option<LeftPanelSnapshot> {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return None;
+        }
+
         let pane_group_ref = pane_group.as_ref(app);
         if !pane_group_ref.left_panel_open {
             return None;
@@ -11672,6 +11750,10 @@ impl Workspace {
         right_panel_width: Option<f32>,
         app: &AppContext,
     ) -> Option<RightPanelSnapshot> {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return None;
+        }
+
         let pane_group_ref = pane_group.as_ref(app);
         if !pane_group_ref.right_panel_open {
             return None;
@@ -12702,7 +12784,8 @@ impl Workspace {
 
         // If the previous tab's left panel was open, maintain that state with the new tab
         // (unless we're restoring the tab from a persisted snapshot).
-        if FeatureFlag::AgentViewConversationListView.is_enabled()
+        if tools_panel_is_supported_for_profile(ChannelState::product_profile())
+            && FeatureFlag::AgentViewConversationListView.is_enabled()
             && !is_restoration
             && left_panel_was_open
         {
@@ -14702,6 +14785,10 @@ impl Workspace {
     /// This function is used when we set a selected object, which is an object open in an active pane.
     /// We do not want to focus Warp Drive, instead we want to focus the editor of the open object.
     fn view_in_warp_drive(&mut self, item_id: WarpDriveItemId, ctx: &mut ViewContext<Self>) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         self.open_left_panel(ctx);
         self.left_panel_view.update(ctx, |left_panel, ctx| {
             left_panel.handle_action(&LeftPanelAction::WarpDrive, ctx);
@@ -14725,6 +14812,10 @@ impl Workspace {
         item_id: WarpDriveItemId,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         self.view_in_warp_drive(item_id, ctx);
 
         self.update_warp_drive_view(ctx, |warp_drive, ctx| {
@@ -16251,6 +16342,10 @@ impl Workspace {
                 self.open_code_review_panel_from_arg(arg, pane_group.clone(), ctx);
             }
             pane_group::Event::ToggleCodeReviewPane(arg) => {
+                if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+                    return;
+                }
+
                 self.toggle_right_panel(&pane_group, ctx);
                 let active_conversation_id = arg.terminal_view.upgrade(ctx).and_then(|tv| {
                     BlocklistAIHistoryModel::as_ref(ctx).active_conversation_id(tv.id())
@@ -17005,6 +17100,10 @@ impl Workspace {
                 target_view,
                 force_open,
             } => {
+                if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+                    return;
+                }
+
                 let is_target_active =
                     self.left_panel_view
                         .read(ctx, |left_panel, _| match target_view {
@@ -17070,6 +17169,15 @@ impl Workspace {
                 self.open_lsp_logs(log_path, ctx);
             }
             pane_group::Event::LeftPanelToggled { is_open } => {
+                if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+                    if *is_open {
+                        pane_group.update(ctx, |pane_group, ctx| {
+                            pane_group.set_left_panel_open(false, ctx);
+                        });
+                    }
+                    return;
+                }
+
                 // Only handle visibility changes from the active pane group.
                 if pane_group.id() == self.active_tab_pane_group().id() {
                     self.left_panel_open = *is_open;
@@ -17084,6 +17192,10 @@ impl Workspace {
                 diff_mode,
                 open_code_review,
             } => {
+                if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+                    return;
+                }
+
                 if let Some(open_code_review) = open_code_review {
                     self.open_code_review_panel_from_arg(open_code_review, pane_group.clone(), ctx);
                 }
@@ -17104,6 +17216,10 @@ impl Workspace {
                 comment,
                 diff_mode,
             } => {
+                if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+                    return;
+                }
+
                 self.open_code_review_panel_from_arg(open_code_review, pane_group.clone(), ctx);
 
                 let Some(repo_path) = &open_code_review.repo_path else {
@@ -17134,6 +17250,10 @@ impl Workspace {
                 diff_mode,
                 open_code_review,
             } => {
+                if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+                    return;
+                }
+
                 self.open_code_review_panel_from_arg(open_code_review, pane_group.clone(), ctx);
 
                 let Some(repo_path) = &open_code_review.repo_path else {
@@ -23649,6 +23769,10 @@ impl Workspace {
     }
 
     fn open_left_panel_view(&mut self, action: &LeftPanelAction, ctx: &mut ViewContext<Self>) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         if !self.active_tab_pane_group().as_ref(ctx).left_panel_open {
             self.toggle_left_panel(ctx);
         }
@@ -23667,6 +23791,10 @@ impl Workspace {
         is_showing_target_view: bool,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         let is_left_panel_open = self.active_tab_pane_group().as_ref(ctx).left_panel_open;
 
         if is_left_panel_open && is_showing_target_view {
@@ -23680,6 +23808,10 @@ impl Workspace {
 
     /// Computes the list of available left panel views based on current AI settings and feature flags.
     fn compute_left_panel_views(ctx: &AppContext) -> Vec<ToolPanelView> {
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            return vec![];
+        }
+
         let mut views = vec![];
         if cfg!(feature = "local_fs") && *CodeSettings::as_ref(ctx).show_project_explorer.value() {
             views.push(ToolPanelView::ProjectExplorer);
@@ -23777,6 +23909,10 @@ impl TypedActionView for Workspace {
     fn handle_action(&mut self, action: &Self::Action, ctx: &mut ViewContext<Self>) {
         use WorkspaceAction::*;
         let window_id = ctx.window_id();
+
+        if ChannelState::is_terminal_only() && is_terminal_only_panel_action_disabled(action) {
+            return;
+        }
 
         if self.auth_state.is_anonymous_or_logged_out() && action.blocked_for_anonymous_user() {
             AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
@@ -27749,9 +27885,13 @@ impl Workspace {
         let color = tab.color();
         let draggable_state = tab.draggable_state.clone();
         let custom_title = pane_group.read(ctx, |pg, ctx| pg.custom_title(ctx));
-        let left_panel_open = pane_group.read(ctx, |pg, _| pg.left_panel_open);
-        let right_panel_open = pane_group.read(ctx, |pg, _| pg.right_panel_open);
-        let is_right_panel_maximized = pane_group.read(ctx, |pg, _| pg.is_right_panel_maximized);
+        let panels_supported =
+            tools_panel_is_supported_for_profile(ChannelState::product_profile());
+        let left_panel_open = panels_supported && pane_group.read(ctx, |pg, _| pg.left_panel_open);
+        let right_panel_open =
+            panels_supported && pane_group.read(ctx, |pg, _| pg.right_panel_open);
+        let is_right_panel_maximized =
+            panels_supported && pane_group.read(ctx, |pg, _| pg.is_right_panel_maximized);
         let vertical_tabs_panel_open = self.vertical_tabs_panel_open;
 
         Some(TransferredTab {
@@ -28092,6 +28232,17 @@ impl Workspace {
         placeholder_pane_group.update(ctx, |pg, ctx| {
             pg.detach_panes_for_close(&working_directories_model, ctx);
         });
+        if !tools_panel_is_supported_for_profile(ChannelState::product_profile()) {
+            self.left_panel_open = false;
+            new_pane_group.update(ctx, |pane_group, _| {
+                pane_group.left_panel_open = false;
+                pane_group.right_panel_open = false;
+                pane_group.is_right_panel_maximized = false;
+            });
+            self.right_panel_view.update(ctx, |right_panel, ctx| {
+                right_panel.close_code_review(ctx);
+            });
+        }
         self.pending_pane_group_transfer = false;
         ctx.dispatch_global_action("workspace:save_app", ());
         ctx.notify();

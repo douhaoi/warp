@@ -41,6 +41,7 @@ use crate::ai::outline::RepoOutlines;
 use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::ai::restored_conversations::RestoredAgentConversations;
 use crate::ai::skills::SkillManager;
+use crate::channel::ProductProfile;
 use crate::cloud_object::model::persistence::CloudModel;
 use crate::cloud_object::model::view::CloudViewModel;
 use crate::context_chips::prompt::Prompt;
@@ -89,6 +90,45 @@ use crate::workspaces::user_workspaces::UserWorkspaces;
 use crate::{
     AgentNotificationsModel, GlobalResourceHandlesProvider, ObjectActions, experiments, workspace,
 };
+
+#[test]
+fn terminal_only_workspace_panel_eligibility_disables_tools_and_code_review() {
+    for item in [
+        HeaderToolbarItemKind::ToolsPanel,
+        HeaderToolbarItemKind::CodeReview,
+    ] {
+        assert!(item.is_supported_for_profile(ProductProfile::Full));
+        assert!(!item.is_supported_for_profile(ProductProfile::TerminalOnly));
+    }
+
+    assert!(tools_panel_is_supported_for_profile(ProductProfile::Full));
+    assert!(!tools_panel_is_supported_for_profile(
+        ProductProfile::TerminalOnly
+    ));
+
+    for action in [
+        WorkspaceAction::ToggleWarpDrive,
+        WorkspaceAction::OpenWarpDrive,
+        WorkspaceAction::ToggleProjectExplorer,
+        WorkspaceAction::OpenProjectExplorer,
+        WorkspaceAction::ToggleGlobalSearch,
+        WorkspaceAction::OpenGlobalSearch,
+        WorkspaceAction::ToggleConversationListView,
+        WorkspaceAction::OpenConversationListView,
+    ] {
+        assert!(is_terminal_only_panel_action_disabled(&action));
+    }
+    assert!(!is_terminal_only_panel_action_disabled(
+        &WorkspaceAction::ClosePanel
+    ));
+    assert!(!is_terminal_only_panel_action_disabled(
+        &WorkspaceAction::ToggleLeftPanel
+    ));
+    assert!(!is_terminal_only_panel_action_disabled(
+        &WorkspaceAction::ToggleRightPanel
+    ));
+}
+
 pub(crate) fn initialize_app(app: &mut App) {
     initialize_settings_for_tests(app);
 
