@@ -1562,7 +1562,7 @@ fn is_terminal_only_input_context_menu_action_disabled(action: &InputContextMenu
     )
 }
 
-fn is_terminal_only_action_disabled(action: &TerminalAction) -> bool {
+pub(crate) fn is_terminal_only_action_disabled(action: &TerminalAction) -> bool {
     match action {
         TerminalAction::ContextMenu(action) => {
             is_terminal_only_context_menu_action_disabled(action)

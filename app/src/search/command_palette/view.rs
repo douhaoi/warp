@@ -23,10 +23,12 @@ use warpui::{
 use super::super::palette_styles as styles;
 use super::CommandPaletteMixer;
 use crate::appearance::Appearance;
+use crate::channel::{ChannelState, ProductProfile};
 use crate::drive::CloudObjectTypeAndId;
 use crate::features::FeatureFlag;
 use crate::palette::PaletteMode;
-use crate::root_view::OpenLaunchConfigArg;
+use crate::pane_group::PaneGroupAction;
+use crate::root_view::{OpenLaunchConfigArg, RootViewAction};
 use crate::search::QueryFilter;
 use crate::search::action::search_item::MatchedBinding;
 use crate::search::binding_source::{BindingFilterFn, BindingSource};
@@ -43,8 +45,11 @@ use crate::server::ids::SyncId;
 use crate::server::telemetry::{LaunchConfigUiLocation, TelemetryEvent};
 use crate::session_management::SessionSource;
 use crate::settings::CtrlTabBehavior;
+use crate::terminal::input::InputAction;
 use crate::terminal::keys_settings::KeysSettings;
+use crate::terminal::view::{TerminalAction, is_terminal_only_action_disabled};
 use crate::themes::theme::WarpTheme;
+use crate::util::bindings::{BindingGroup, CommandBinding};
 use crate::view_components::DismissibleToast;
 use crate::workspace::{ForkedConversationDestination, WorkspaceAction, active_terminal_in_window};
 use crate::{ToastStack, send_telemetry_from_ctx};
@@ -332,6 +337,10 @@ impl View {
 
     /// Set the active query filter in the search bar to be `filter`.
     pub fn set_active_query_filter(&mut self, filter: QueryFilter, ctx: &mut ViewContext<Self>) {
+        if !is_query_filter_supported_for_profile(filter, ChannelState::product_profile()) {
+            return;
+        }
+
         self.search_bar.update(ctx, |view, ctx| {
             view.set_query_filter(Some((filter, filter.filter_atom().primary_text)), ctx)
         });
@@ -370,6 +379,10 @@ impl View {
     }
 
     pub fn is_mode_enabled(&self, mode: PaletteMode, app: &AppContext) -> bool {
+        if !is_palette_mode_supported_for_profile(mode, ChannelState::product_profile()) {
+            return false;
+        }
+
         let Some(active_query_filter) = self.active_query_filter(app) else {
             return false;
         };
@@ -412,6 +425,10 @@ impl View {
     fn handle_zero_state_event(&mut self, event: &ZeroStateEvent, ctx: &mut ViewContext<Self>) {
         match event {
             ZeroStateEvent::FilterChipSelected { filter } => {
+                if !is_query_filter_supported_for_profile(*filter, ChannelState::product_profile())
+                {
+                    return;
+                }
                 self.set_active_query_filter(*filter, ctx);
             }
         }
@@ -445,26 +462,34 @@ impl View {
         ctx: &mut ViewContext<Self>,
     ) {
         let ctrl_tab_behavior = *KeysSettings::as_ref(ctx).ctrl_tab_behavior;
-        let binding_filter_fn: BindingFilterFn =
-            if matches!(ctrl_tab_behavior, CtrlTabBehavior::CycleMostRecentSession) {
-                Some(Arc::new(|binding| {
-                    if let Some(action) = &binding.action {
-                        // Filter out the cycle next/prev session actions from the palette if ctrl-tab
-                        // behavior is set to cycle most/least recent session. Clicking on them or hitting enter
-                        // doesn't make sense because the action needs to be triggered from a ctrl-tab only (with
-                        // ctrl key held down).
-                        !matches!(
-                            action.as_any().downcast_ref::<WorkspaceAction>(),
-                            Some(WorkspaceAction::CycleNextSession)
-                                | Some(WorkspaceAction::CyclePrevSession)
-                        )
-                    } else {
-                        true
-                    }
-                }))
-            } else {
-                None
-            };
+        let binding_filter_fn: BindingFilterFn = if ChannelState::is_terminal_only() {
+            let exclude_ctrl_tab_cycle_actions =
+                matches!(ctrl_tab_behavior, CtrlTabBehavior::CycleMostRecentSession);
+            Some(Arc::new(move |binding| {
+                terminal_only_binding_is_allowed_for_palette(
+                    binding,
+                    exclude_ctrl_tab_cycle_actions,
+                )
+            }))
+        } else if matches!(ctrl_tab_behavior, CtrlTabBehavior::CycleMostRecentSession) {
+            Some(Arc::new(|binding| {
+                if let Some(action) = &binding.action {
+                    // Filter out the cycle next/prev session actions from the palette if ctrl-tab
+                    // behavior is set to cycle most/least recent session. Clicking on them or hitting enter
+                    // doesn't make sense because the action needs to be triggered from a ctrl-tab only (with
+                    // ctrl key held down).
+                    !matches!(
+                        action.as_any().downcast_ref::<WorkspaceAction>(),
+                        Some(WorkspaceAction::CycleNextSession)
+                            | Some(WorkspaceAction::CyclePrevSession)
+                    )
+                } else {
+                    true
+                }
+            }))
+        } else {
+            None
+        };
         self.binding_source.update(ctx, move |binding_source, ctx| {
             *binding_source = BindingSource::View {
                 window_id,
@@ -718,6 +743,12 @@ impl View {
         result_action: CommandPaletteItemAction,
         ctx: &mut ViewContext<Self>,
     ) {
+        if ChannelState::is_terminal_only()
+            && !terminal_only_command_palette_item_action_is_allowed(&result_action)
+        {
+            return;
+        }
+
         // Tab navigations don't appear in the main command palette to avoid confusion with session
         // navigations, so they can't evict real recent items from SelectedItems.
         if !matches!(
@@ -1023,3 +1054,264 @@ impl View {
         ctx.dispatch_typed_action_for_view(window_id, view_id, action);
     }
 }
+
+pub(crate) fn is_palette_mode_supported_for_profile(
+    mode: PaletteMode,
+    product_profile: ProductProfile,
+) -> bool {
+    product_profile == ProductProfile::Full
+        || matches!(
+            mode,
+            PaletteMode::Command | PaletteMode::Navigation | PaletteMode::LaunchConfig
+        )
+}
+
+fn is_query_filter_supported_for_profile(
+    filter: QueryFilter,
+    product_profile: ProductProfile,
+) -> bool {
+    product_profile == ProductProfile::Full
+        || matches!(
+            filter,
+            QueryFilter::Actions | QueryFilter::Sessions | QueryFilter::LaunchConfigurations
+        )
+}
+
+pub(crate) fn terminal_only_binding_is_allowed(binding: &CommandBinding) -> bool {
+    if !matches!(
+        binding.group,
+        None | Some(BindingGroup::Terminal)
+            | Some(BindingGroup::Navigation)
+            | Some(BindingGroup::Close)
+            | Some(BindingGroup::Settings)
+            | Some(BindingGroup::KeyboardShortcuts)
+            | Some(BindingGroup::Notifications)
+    ) {
+        return false;
+    }
+
+    let Some(action) = binding.action.as_deref() else {
+        return false;
+    };
+
+    if let Some(action) = action.as_any().downcast_ref::<TerminalAction>() {
+        return !is_terminal_only_action_disabled(action)
+            && matches!(
+                binding.name.as_str(),
+                "terminal:alternate_terminal_paste"
+                    | "terminal:focus_input"
+                    | "terminal:paste"
+                    | "terminal:copy"
+                    | "terminal:reinput_commands"
+                    | "terminal:reinput_commands_with_sudo"
+                    | "terminal:find"
+                    | "terminal:select_bookmark_up"
+                    | "terminal:select_bookmark_down"
+                    | "terminal:open_block_list_context_menu_via_keybinding"
+                    | "terminal:copy_git_branch"
+                    | "terminal:clear_blocks"
+                    | "terminal:executing_command_move_cursor_word_left"
+                    | "terminal:executing_command_move_cursor_word_right"
+                    | "terminal:executing_command_move_cursor_home"
+                    | "terminal:executing_command_move_cursor_end"
+                    | "terminal:executing_command_delete_word_left"
+                    | "terminal:executing_command_delete_line_start"
+                    | "terminal:executing_command_delete_line_end"
+                    | "terminal:backward_tabulation"
+                    | "terminal:bookmark_selected_block"
+                    | "terminal:copy_outputs"
+                    | "terminal:copy_commands"
+                    | "terminal:scroll_up_one_line"
+                    | "terminal:scroll_down_one_line"
+                    | "terminal:scroll_up_one_page"
+                    | "terminal:scroll_down_one_page"
+                    | "terminal:scroll_to_top_of_selected_block"
+                    | "terminal:scroll_to_bottom_of_selected_block"
+                    | "terminal:select_all_blocks"
+                    | "terminal:expand_block_selection_above"
+                    | "terminal:expand_block_selection_below"
+                    | "terminal:stop_sharing_current_session"
+                    | "terminal:toggle_block_filter_on_selected_or_last_block"
+                    | "terminal:toggle_snackbar_in_active_pane"
+                    | "terminal:toggle_session_recording"
+            );
+    }
+
+    if let Some(action) = action.as_any().downcast_ref::<InputAction>() {
+        return matches!(
+            action,
+            InputAction::CtrlD
+                | InputAction::Up
+                | InputAction::PageUp
+                | InputAction::PageDown
+                | InputAction::ClearScreen
+                | InputAction::MaybeOpenCompletionSuggestions
+                | InputAction::ToggleClassicCompletionsMode
+        ) && matches!(
+            binding.name.as_str(),
+            "input:clear_screen"
+                | "terminal:scroll_up_one_page"
+                | "terminal:scroll_down_one_page"
+                | "input:toggle_classic_completions_mode"
+                | "workspace:show_command_search"
+        );
+    }
+
+    if let Some(action) = action.as_any().downcast_ref::<PaneGroupAction>() {
+        return matches!(
+            action,
+            PaneGroupAction::Add(_)
+                | PaneGroupAction::Remove(_)
+                | PaneGroupAction::RemoveActive
+                | PaneGroupAction::Activate(_, _)
+                | PaneGroupAction::ResizeMove(_)
+                | PaneGroupAction::StartResizing(_)
+                | PaneGroupAction::ResetPaneSizes(_)
+                | PaneGroupAction::Move { .. }
+                | PaneGroupAction::EndResizing
+                | PaneGroupAction::ResizeLeft
+                | PaneGroupAction::ResizeRight
+                | PaneGroupAction::ResizeUp
+                | PaneGroupAction::ResizeDown
+                | PaneGroupAction::NavigatePrev
+                | PaneGroupAction::NavigateNext
+                | PaneGroupAction::NavigateLeft
+                | PaneGroupAction::NavigateRight
+                | PaneGroupAction::NavigateUp
+                | PaneGroupAction::NavigateDown
+                | PaneGroupAction::ToggleMaximizePane
+                | PaneGroupAction::HandleFocusChange
+                | PaneGroupAction::FocusTerminalView(_)
+        );
+    }
+
+    if let Some(action) = action.as_any().downcast_ref::<RootViewAction>() {
+        return matches!(action, RootViewAction::ToggleFullscreen);
+    }
+
+    action
+        .as_any()
+        .downcast_ref::<WorkspaceAction>()
+        .is_some_and(terminal_only_workspace_action_is_allowed)
+}
+
+fn is_ctrl_tab_cycle_binding(binding: &CommandBinding) -> bool {
+    matches!(
+        binding
+            .action
+            .as_deref()
+            .and_then(|action| action.as_any().downcast_ref::<WorkspaceAction>()),
+        Some(WorkspaceAction::CycleNextSession) | Some(WorkspaceAction::CyclePrevSession)
+    )
+}
+
+fn terminal_only_binding_is_allowed_for_palette(
+    binding: &CommandBinding,
+    exclude_ctrl_tab_cycle_actions: bool,
+) -> bool {
+    terminal_only_binding_is_allowed(binding)
+        && (!exclude_ctrl_tab_cycle_actions || !is_ctrl_tab_cycle_binding(binding))
+}
+
+pub(crate) fn terminal_only_command_palette_item_action_is_allowed(
+    action: &CommandPaletteItemAction,
+) -> bool {
+    match action {
+        CommandPaletteItemAction::AcceptBinding { binding } => {
+            terminal_only_binding_is_allowed(binding)
+        }
+        CommandPaletteItemAction::NavigateToSession { .. }
+        | CommandPaletteItemAction::NavigateToTab { .. }
+        | CommandPaletteItemAction::OpenLaunchConfiguration { .. }
+        | CommandPaletteItemAction::NewSession { .. }
+        | CommandPaletteItemAction::NoOp => true,
+        CommandPaletteItemAction::ExecuteWorkflow { .. }
+        | CommandPaletteItemAction::OpenNotebook { .. }
+        | CommandPaletteItemAction::ViewInWarpDrive { .. }
+        | CommandPaletteItemAction::InvokeEnvironmentVariables { .. }
+        | CommandPaletteItemAction::NavigateToConversation { .. }
+        | CommandPaletteItemAction::ForkConversation { .. }
+        | CommandPaletteItemAction::OpenFile { .. }
+        | CommandPaletteItemAction::OpenDirectory { .. }
+        | CommandPaletteItemAction::CreateFile { .. }
+        | CommandPaletteItemAction::NewConversationInProject { .. }
+        | CommandPaletteItemAction::NewConversation => false,
+    }
+}
+
+pub(crate) fn terminal_only_command_palette_event_is_allowed(event: &Event) -> bool {
+    matches!(event, Event::Close { .. })
+}
+
+pub(crate) fn terminal_only_workspace_action_is_allowed(action: &WorkspaceAction) -> bool {
+    matches!(
+        action,
+        WorkspaceAction::ActivateTab(_)
+            | WorkspaceAction::ActivatePrevTab
+            | WorkspaceAction::ActivateNextTab
+            | WorkspaceAction::ActivateLastTab
+            | WorkspaceAction::CyclePrevSession
+            | WorkspaceAction::CycleNextSession
+            | WorkspaceAction::MoveActiveTabLeft
+            | WorkspaceAction::MoveActiveTabRight
+            | WorkspaceAction::MoveTabLeft(_)
+            | WorkspaceAction::MoveTabRight(_)
+            | WorkspaceAction::RenameTab(_)
+            | WorkspaceAction::ResetTabName(_)
+            | WorkspaceAction::RenamePane(_)
+            | WorkspaceAction::ResetPaneName(_)
+            | WorkspaceAction::RenameActiveTab
+            | WorkspaceAction::RenameActivePane
+            | WorkspaceAction::SetActiveTabName(_)
+            | WorkspaceAction::SetActiveTabColor(_)
+            | WorkspaceAction::CloseTab(_)
+            | WorkspaceAction::CloseActiveTab
+            | WorkspaceAction::CloseOtherTabs(_)
+            | WorkspaceAction::CloseNonActiveTabs
+            | WorkspaceAction::CloseTabsRight(_)
+            | WorkspaceAction::CloseTabsRightActiveTab
+            | WorkspaceAction::AddDefaultTab
+            | WorkspaceAction::AddTerminalTab { .. }
+            | WorkspaceAction::AddTabWithShell { .. }
+            | WorkspaceAction::OpenNewSessionMenu { .. }
+            | WorkspaceAction::ToggleNewSessionMenu { .. }
+            | WorkspaceAction::SelectNewSessionMenuItem(_)
+            | WorkspaceAction::ConfigureKeybindingSettings { .. }
+            | WorkspaceAction::ShowSettings
+            | WorkspaceAction::ShowSettingsPage(_)
+            | WorkspaceAction::ShowSettingsPageWithSearch { .. }
+            | WorkspaceAction::ShowThemeChooser(_)
+            | WorkspaceAction::ShowThemeChooserForActiveTheme
+            | WorkspaceAction::IncreaseFontSize
+            | WorkspaceAction::DecreaseFontSize
+            | WorkspaceAction::ResetFontSize
+            | WorkspaceAction::IncreaseZoom
+            | WorkspaceAction::DecreaseZoom
+            | WorkspaceAction::ResetZoom
+            | WorkspaceAction::ActivateTabByNumber(_)
+            | WorkspaceAction::ToggleNotifications
+            | WorkspaceAction::ToggleKeybindingsPage
+            | WorkspaceAction::ReopenClosedSession
+            | WorkspaceAction::CopyCurrentPath
+            | WorkspaceAction::OpenSettingsFile
+            | WorkspaceAction::TerminateApp
+            | WorkspaceAction::FocusTerminalViewInWorkspace { .. }
+            | WorkspaceAction::FocusPane(_)
+            | WorkspaceAction::ToggleMouseReporting
+            | WorkspaceAction::ToggleScrollReporting
+            | WorkspaceAction::ToggleFocusReporting
+            | WorkspaceAction::CloseWindow
+            | WorkspaceAction::OpenPalette {
+                mode: PaletteMode::Command | PaletteMode::Navigation | PaletteMode::LaunchConfig,
+                ..
+            }
+            | WorkspaceAction::TogglePalette {
+                mode: PaletteMode::Command | PaletteMode::Navigation | PaletteMode::LaunchConfig,
+                ..
+            }
+    )
+}
+
+#[cfg(test)]
+#[path = "view_tests.rs"]
+mod tests;

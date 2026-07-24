@@ -11,6 +11,7 @@ use warpui::{
 };
 
 use crate::appearance::Appearance;
+use crate::channel::ChannelState;
 use crate::drive::settings::WarpDriveSettings;
 use crate::search::QueryFilter;
 use crate::search::command_palette::FilterChipRenderer;
@@ -81,6 +82,11 @@ impl ZeroState {
         app: &AppContext,
         window_id: WindowId,
     ) -> impl Iterator<Item = QueryFilter> + use<> {
+        if ChannelState::is_terminal_only() {
+            return terminal_only_query_filters(ContextFlag::LaunchConfigurations.is_enabled())
+                .into_iter();
+        }
+
         let show_warp_drive = WarpDriveSettings::is_warp_drive_enabled(app);
 
         let mut valid_filters = vec![];
@@ -124,6 +130,14 @@ impl ZeroState {
 
         valid_filters.into_iter()
     }
+}
+
+fn terminal_only_query_filters(launch_configurations_enabled: bool) -> Vec<QueryFilter> {
+    let mut filters = vec![QueryFilter::Actions, QueryFilter::Sessions];
+    if launch_configurations_enabled {
+        filters.push(QueryFilter::LaunchConfigurations);
+    }
+    filters
 }
 
 impl Entity for ZeroState {
@@ -172,4 +186,25 @@ mod styles {
 
     /// Vertical padding around all inner content within the view.
     pub const PADDING_VERTICAL: f32 = 8.;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn terminal_only_filter_chips_include_only_terminal_palette_sources() {
+        assert_eq!(
+            terminal_only_query_filters(false),
+            vec![QueryFilter::Actions, QueryFilter::Sessions]
+        );
+        assert_eq!(
+            terminal_only_query_filters(true),
+            vec![
+                QueryFilter::Actions,
+                QueryFilter::Sessions,
+                QueryFilter::LaunchConfigurations,
+            ]
+        );
+    }
 }

@@ -7,6 +7,7 @@ use warpui::keymap::BindingId;
 use warpui::{AppContext, Entity, ModelContext, ModelHandle, SingletonEntity};
 
 use super::{conversations, warp_drive};
+use crate::channel::ChannelState;
 use crate::drive::settings::WarpDriveSettings;
 use crate::search::QueryFilter;
 use crate::search::action::CommandBindingDataSource;
@@ -25,11 +26,11 @@ use crate::settings::AISettings;
 pub struct DataSourceStore {
     actions_data_source: ModelHandle<CommandBindingDataSource>,
     sessions_data_source: ModelHandle<navigation::DataSource>,
-    warp_drive_data_source: ModelHandle<warp_drive::DataSource>,
+    warp_drive_data_source: Option<ModelHandle<warp_drive::DataSource>>,
     launch_config_data_source: ModelHandle<launch_config::DataSource>,
     new_session_data_source: Option<ModelHandle<NewSessionDataSource>>,
-    all_conversation_data_source: ModelHandle<conversations::DataSource>,
-    repo_data_source: ModelHandle<RepoDataSource>,
+    all_conversation_data_source: Option<ModelHandle<conversations::DataSource>>,
+    repo_data_source: Option<ModelHandle<RepoDataSource>>,
     tabs_data_source: Option<ModelHandle<tabs::DataSource>>,
 }
 
@@ -45,7 +46,10 @@ impl DataSourceStore {
         let sessions_data_source =
             ctx.add_model(|_| navigation::DataSource::new(active_session_handle));
 
-        let warp_drive_data_source = ctx.add_model(warp_drive::DataSource::new);
+        let is_terminal_only = ChannelState::is_terminal_only();
+
+        let warp_drive_data_source =
+            (!is_terminal_only).then(|| ctx.add_model(warp_drive::DataSource::new));
 
         let launch_config_data_source = ctx.add_model(launch_config::DataSource::new);
 
@@ -53,10 +57,11 @@ impl DataSourceStore {
             && cfg!(feature = "local_tty"))
         .then_some(ctx.add_model(|ctx| NewSessionDataSource::new(binding_source, ctx)));
 
-        let all_conversation_data_source: ModelHandle<conversations::DataSource> =
-            ctx.add_model(|_| conversations::DataSource::new());
+        let all_conversation_data_source =
+            (!is_terminal_only).then(|| ctx.add_model(|_| conversations::DataSource::new()));
 
-        let repo_data_source = ctx.add_model(|_| RepoDataSource::new());
+        let repo_data_source =
+            (!is_terminal_only).then(|| ctx.add_model(|_| RepoDataSource::new()));
 
         Self {
             actions_data_source,
@@ -92,7 +97,9 @@ impl DataSourceStore {
                 HashSet::from([QueryFilter::Sessions]),
             );
 
-            if WarpDriveSettings::is_warp_drive_enabled(ctx) {
+            if let Some(warp_drive_data_source) = &self.warp_drive_data_source
+                && WarpDriveSettings::is_warp_drive_enabled(ctx)
+            {
                 let mut warp_drive_filters = HashSet::from([
                     QueryFilter::Notebooks,
                     QueryFilter::Plans,
@@ -105,7 +112,7 @@ impl DataSourceStore {
                 if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
                     warp_drive_filters.insert(QueryFilter::AgentModeWorkflows);
                 }
-                mixer.add_sync_source(self.warp_drive_data_source.clone(), warp_drive_filters);
+                mixer.add_sync_source(warp_drive_data_source.clone(), warp_drive_filters);
             }
 
             mixer.add_sync_source(
@@ -120,7 +127,10 @@ impl DataSourceStore {
                 );
             }
 
-            if FeatureFlag::CommandPaletteFileSearch.is_enabled() && !is_shared_session_viewer {
+            if !ChannelState::is_terminal_only()
+                && FeatureFlag::CommandPaletteFileSearch.is_enabled()
+                && !is_shared_session_viewer
+            {
                 let file_search_model = FileSearchModel::as_ref(ctx);
                 let is_in_git_repo = file_search_model.repo_root_location(ctx).is_some();
 
@@ -142,17 +152,21 @@ impl DataSourceStore {
             }
 
             // Add conversation search if AI is enabled
-            if AISettings::as_ref(ctx).is_any_ai_enabled(ctx) {
+            if let Some(all_conversation_data_source) = &self.all_conversation_data_source
+                && AISettings::as_ref(ctx).is_any_ai_enabled(ctx)
+            {
                 mixer.add_sync_source(
-                    self.all_conversation_data_source.clone(),
+                    all_conversation_data_source.clone(),
                     HashSet::from([QueryFilter::Conversations]),
                 );
             }
 
-            mixer.add_sync_source(
-                self.repo_data_source.clone(),
-                HashSet::from([QueryFilter::Repos]),
-            );
+            if let Some(repo_data_source) = &self.repo_data_source {
+                mixer.add_sync_source(
+                    repo_data_source.clone(),
+                    HashSet::from([QueryFilter::Repos]),
+                );
+            }
 
             ctx.notify();
         });
@@ -204,6 +218,10 @@ impl DataSourceStore {
         summary: &ItemSummary,
         app: &AppContext,
     ) -> Option<QueryResult<CommandPaletteItemAction>> {
+        if ChannelState::is_terminal_only() && !is_terminal_only_item_summary_allowed(summary) {
+            return None;
+        }
+
         match summary {
             ItemSummary::Action { binding_id } => self
                 .actions_data_source
@@ -211,16 +229,16 @@ impl DataSourceStore {
                 .query_result(*binding_id),
             ItemSummary::Workflow { id } => self
                 .warp_drive_data_source
-                .as_ref(app)
-                .query_result(id, app),
+                .as_ref()
+                .and_then(|source| source.as_ref(app).query_result(id, app)),
             ItemSummary::EnvVarCollection { id } => self
                 .warp_drive_data_source
-                .as_ref(app)
-                .query_result(id, app),
+                .as_ref()
+                .and_then(|source| source.as_ref(app).query_result(id, app)),
             ItemSummary::Notebook { id } => self
                 .warp_drive_data_source
-                .as_ref(app)
-                .query_result(id, app),
+                .as_ref()
+                .and_then(|source| source.as_ref(app).query_result(id, app)),
             ItemSummary::Session { pane_view_locator } => self
                 .sessions_data_source
                 .as_ref(app)
@@ -318,6 +336,18 @@ impl DataSourceStore {
     ) -> Option<QueryResult<CommandPaletteItemAction>> {
         self.query_result_from_summary(&ItemSummary::Action { binding_id }, app)
     }
+}
+
+pub(crate) fn is_terminal_only_item_summary_allowed(summary: &ItemSummary) -> bool {
+    matches!(
+        summary,
+        ItemSummary::Action { .. }
+            | ItemSummary::Session { .. }
+            | ItemSummary::Tab { .. }
+            | ItemSummary::NewSession { .. }
+            | ItemSummary::LaunchConfiguration
+            | ItemSummary::NoOp
+    )
 }
 
 impl Entity for DataSourceStore {

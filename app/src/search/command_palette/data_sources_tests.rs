@@ -3,7 +3,8 @@ use std::sync::Arc;
 use chrono::Utc;
 use cloud_object_client::MockObjectClient;
 use settings::manager::SettingsManager;
-use warpui::{App, SingletonEntity};
+use warpui::keymap::BindingId;
+use warpui::{App, EntityId, SingletonEntity};
 
 use super::*;
 use crate::auth::AuthStateProvider;
@@ -15,6 +16,8 @@ use crate::cloud_object::{
 use crate::network::NetworkStatus;
 use crate::notebooks::manager::NotebookManager;
 use crate::notebooks::{CloudNotebookModel, NotebookId};
+use crate::pane_group::TerminalPaneId;
+use crate::search::command_palette::new_session::NewSessionOptionId;
 use crate::search::data_source::Query;
 use crate::server::cloud_objects::update_manager::UpdateManager;
 use crate::server::ids::ServerId;
@@ -27,6 +30,7 @@ use crate::settings::AISettings;
 use crate::system::SystemStats;
 use crate::workflows::workflow::Workflow;
 use crate::workflows::{CloudWorkflowModel, WorkflowId};
+use crate::workspace::PaneViewLocator;
 use crate::workspaces::team_tester::TeamTesterStatus;
 use crate::workspaces::user_profiles::UserProfiles;
 use crate::workspaces::user_workspaces::UserWorkspaces;
@@ -296,4 +300,58 @@ fn test_drive_data_source_correctly_filters_notebook_filter() {
             assert!(results[0].accessibility_label().starts_with("Notebook:"));
         });
     })
+}
+
+#[test]
+fn terminal_only_recent_items_allow_only_terminal_summary_variants() {
+    for summary in [
+        ItemSummary::Action {
+            binding_id: BindingId::new(),
+        },
+        ItemSummary::Session {
+            pane_view_locator: PaneViewLocator {
+                pane_group_id: EntityId::new(),
+                pane_id: TerminalPaneId::dummy_terminal_pane_id().into(),
+            },
+        },
+        ItemSummary::Tab {
+            pane_group_id: EntityId::new(),
+        },
+        ItemSummary::NewSession {
+            id: NewSessionOptionId("terminal".into()),
+        },
+        ItemSummary::LaunchConfiguration,
+        ItemSummary::NoOp,
+    ] {
+        assert!(is_terminal_only_item_summary_allowed(&summary));
+    }
+
+    for summary in [
+        ItemSummary::Workflow {
+            id: SyncId::ServerId(1.into()),
+        },
+        ItemSummary::EnvVarCollection {
+            id: SyncId::ServerId(2.into()),
+        },
+        ItemSummary::Notebook {
+            id: SyncId::ServerId(3.into()),
+        },
+        ItemSummary::CloudObject,
+        ItemSummary::File {
+            path: "file.rs".into(),
+            project_directory: "/tmp".into(),
+            line_and_column_arg: None,
+        },
+        ItemSummary::Directory {
+            path: "src".into(),
+            project_directory: "/tmp".into(),
+        },
+        ItemSummary::Project {
+            path: "/tmp".into(),
+        },
+        ItemSummary::NewConversation,
+        ItemSummary::ForkConversation,
+    ] {
+        assert!(!is_terminal_only_item_summary_allowed(&summary));
+    }
 }

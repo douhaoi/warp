@@ -316,6 +316,7 @@ use crate::reward_view::{RewardEvent, RewardKind, RewardView};
 use crate::root_view::{NewWorkspaceSource, OpenLaunchConfigArg, quake_mode_window_id};
 use crate::search::command_palette::view::{
     Event as CommandPaletteEvent, NavigationMode, View as CommandPalette,
+    is_palette_mode_supported_for_profile, terminal_only_command_palette_event_is_allowed,
 };
 use crate::search::command_search::searcher::{
     AcceptedHistoryItem, AcceptedWorkflow, CommandSearchItemAction,
@@ -14587,6 +14588,10 @@ impl Workspace {
         source: PaletteSource,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !is_palette_mode_supported_for_profile(mode, ChannelState::product_profile()) {
+            return;
+        }
+
         self.close_all_overlays(ctx);
 
         // Set the shared session viewer state before opening the palette
@@ -14645,6 +14650,10 @@ impl Workspace {
         with_content: Option<&str>,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !is_palette_mode_supported_for_profile(palette_mode, ChannelState::product_profile()) {
+            return;
+        }
+
         // ensure the palette sources are up-to-date, e.g. maybe there is already a navigation
         // palette open and then new sessions were opened after that
         self.set_palette_sources(source, ctx);
@@ -14668,6 +14677,10 @@ impl Workspace {
         source: PaletteSource,
         ctx: &mut ViewContext<Self>,
     ) {
+        if !is_palette_mode_supported_for_profile(palette_mode, ChannelState::product_profile()) {
+            return;
+        }
+
         // If the invite modal is open, don't show the palette since it won't be visible anyway
         if !self
             .current_workspace_state
@@ -14688,6 +14701,12 @@ impl Workspace {
     }
 
     fn handle_palette_event(&mut self, event: &CommandPaletteEvent, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only()
+            && !terminal_only_command_palette_event_is_allowed(event)
+        {
+            return;
+        }
+
         match event {
             CommandPaletteEvent::Close {
                 accepted_action_type,
