@@ -41,6 +41,7 @@ use crate::ai::agent_management::AgentNotificationsModel;
 use crate::ai::cloud_environments::CloudAmbientAgentEnvironment;
 use crate::ai::conversation_status_ui::render_status_element;
 use crate::appearance::Appearance;
+use crate::channel::ChannelState;
 use crate::cloud_object::CloudObjectLookup as _;
 use crate::cloud_object::model::generic_string_model::StringModel;
 use crate::code::editor::{add_color, remove_color};
@@ -83,6 +84,7 @@ use crate::workspace::{
     VerticalTabsPaneDropTargetData, Workspace,
 };
 use crate::{FeatureFlag, send_telemetry_from_app_ctx};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 const PANEL_WIDTH: f32 = 248.;
 const MIN_PANEL_WIDTH: f32 = 200.;
@@ -952,6 +954,111 @@ struct VerticalTabsSummaryData {
     has_unread_activity: bool,
 }
 
+/// A stable project identity for one contiguous run in the terminal-only sidebar.
+///
+/// Keep the full `LocalOrRemotePath` here: its remote host identity is part of the
+/// key, even though the rendered label only shows the path component.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum TerminalSidebarProjectKey {
+    Path(LocalOrRemotePath),
+    Unassigned,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TerminalSidebarProjectStatus {
+    Unknown,
+    Idle,
+    Running,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct TerminalSidebarProjectHeader {
+    key: TerminalSidebarProjectKey,
+    branch: Option<String>,
+    status: TerminalSidebarProjectStatus,
+}
+
+#[derive(Clone, Copy)]
+struct TerminalSidebarProjectMetadata<'a> {
+    cwd: Option<&'a LocalOrRemotePath>,
+    repo_root: Option<&'a LocalOrRemotePath>,
+    branch: Option<&'a str>,
+    is_running: bool,
+    has_observed_command_lifecycle: bool,
+}
+
+fn terminal_sidebar_project_key(
+    metadata: &[TerminalSidebarProjectMetadata<'_>],
+) -> TerminalSidebarProjectKey {
+    metadata
+        .iter()
+        .find_map(|metadata| metadata.repo_root)
+        .or_else(|| metadata.iter().find_map(|metadata| metadata.cwd))
+        .cloned()
+        .map(TerminalSidebarProjectKey::Path)
+        .unwrap_or(TerminalSidebarProjectKey::Unassigned)
+}
+
+fn terminal_sidebar_project_header(
+    metadata: &[TerminalSidebarProjectMetadata<'_>],
+) -> TerminalSidebarProjectHeader {
+    let key = terminal_sidebar_project_key(metadata);
+    let status = if metadata.iter().any(|metadata| metadata.is_running) {
+        TerminalSidebarProjectStatus::Running
+    } else if metadata
+        .iter()
+        .any(|metadata| metadata.has_observed_command_lifecycle)
+    {
+        TerminalSidebarProjectStatus::Idle
+    } else {
+        TerminalSidebarProjectStatus::Unknown
+    };
+    let branch = metadata
+        .first()
+        .and_then(|metadata| metadata.branch)
+        .filter(|branch| {
+            metadata
+                .iter()
+                .all(|metadata| metadata.branch == Some(*branch))
+        })
+        .map(str::to_owned);
+
+    TerminalSidebarProjectHeader {
+        key,
+        branch,
+        status,
+    }
+}
+
+/// Returns a header at the first unit of each contiguous project run. The run
+/// aggregates lifecycle and branch metadata so a later running terminal cannot
+/// leave a preceding project header looking idle.
+fn terminal_sidebar_project_headers_for_units(
+    units: &[Vec<TerminalSidebarProjectMetadata<'_>>],
+) -> Vec<Option<TerminalSidebarProjectHeader>> {
+    let unit_keys: Vec<_> = units
+        .iter()
+        .map(|metadata| terminal_sidebar_project_header(metadata).key)
+        .collect();
+    let mut headers = vec![None; units.len()];
+    let mut start = 0;
+    while start < units.len() {
+        let key = &unit_keys[start];
+        let end = unit_keys[start..]
+            .iter()
+            .take_while(|candidate| *candidate == key)
+            .count()
+            + start;
+        let metadata = units[start..end]
+            .iter()
+            .flat_map(|unit| unit.iter().copied())
+            .collect::<Vec<_>>();
+        headers[start] = Some(terminal_sidebar_project_header(&metadata));
+        start = end;
+    }
+    headers
+}
+
 impl TabGroupColorMode {
     fn into_per_pane_colors(
         self,
@@ -1743,6 +1850,122 @@ fn render_vertical_tabs_panel(
         .finish()
 }
 
+fn terminal_sidebar_project_metadata_for_pane<'a>(
+    workspace: &'a Workspace,
+    pane_id: PaneId,
+) -> Option<TerminalSidebarProjectMetadata<'a>> {
+    workspace
+        .terminal_sidebar_snapshot(pane_id)
+        .map(|snapshot| TerminalSidebarProjectMetadata {
+            cwd: snapshot.cwd.as_ref(),
+            repo_root: snapshot.repo_root.as_ref(),
+            branch: snapshot.branch.as_deref(),
+            is_running: snapshot.is_running,
+            has_observed_command_lifecycle: snapshot.has_observed_command_lifecycle,
+        })
+}
+
+fn terminal_sidebar_project_pane_ids_for_tab(
+    tab: &TabData,
+    filtered_pane_ids: Option<&[PaneId]>,
+    app: &AppContext,
+) -> Vec<PaneId> {
+    let pane_group = tab.pane_group.as_ref(app);
+    terminal_sidebar_project_pane_ids(&pane_group.visible_pane_ids(), filtered_pane_ids)
+}
+
+fn terminal_sidebar_project_pane_ids(
+    visible_pane_ids: &[PaneId],
+    filtered_pane_ids: Option<&[PaneId]>,
+) -> Vec<PaneId> {
+    filtered_pane_ids.map_or_else(|| visible_pane_ids.to_vec(), ToOwned::to_owned)
+}
+
+fn terminal_sidebar_project_headers_for_visible_units(
+    workspace: &Workspace,
+    visible_tabs: &[(usize, Option<Vec<PaneId>>)],
+    app: &AppContext,
+) -> Vec<Option<TerminalSidebarProjectHeader>> {
+    let mut units = Vec::new();
+    let mut i = 0;
+    while i < visible_tabs.len() {
+        let (tab_index, _) = visible_tabs[i];
+        let tab = &workspace.tabs[tab_index];
+        let run_len = tab
+            .group_id
+            .and_then(|group_id| workspace.tab_groups.get(&group_id).map(|_| group_id))
+            .map_or(1, |group_id| {
+                visible_tabs[i..]
+                    .iter()
+                    .take_while(|(index, _)| workspace.tabs[*index].group_id == Some(group_id))
+                    .count()
+            });
+        let metadata = visible_tabs[i..i + run_len]
+            .iter()
+            .flat_map(|(tab_index, filtered_pane_ids)| {
+                terminal_sidebar_project_pane_ids_for_tab(
+                    &workspace.tabs[*tab_index],
+                    filtered_pane_ids.as_deref(),
+                    app,
+                )
+            })
+            .filter_map(|pane_id| terminal_sidebar_project_metadata_for_pane(workspace, pane_id))
+            .collect();
+        units.push(metadata);
+        i += run_len;
+    }
+    terminal_sidebar_project_headers_for_units(&units)
+}
+
+fn render_terminal_sidebar_project_header(
+    header: TerminalSidebarProjectHeader,
+    appearance: &Appearance,
+) -> Box<dyn Element> {
+    let theme = appearance.theme();
+    let (title, path) = match header.key {
+        TerminalSidebarProjectKey::Path(path) => {
+            let display_path = path.display_path();
+            let display_name = path.display_name();
+            let title = if display_name.is_empty() {
+                display_path.clone()
+            } else {
+                display_name.to_owned()
+            };
+            (title, Some(display_path))
+        }
+        TerminalSidebarProjectKey::Unassigned => ("Unassigned".to_string(), None),
+    };
+    let status = match header.status {
+        TerminalSidebarProjectStatus::Unknown => "Waiting for terminal",
+        TerminalSidebarProjectStatus::Idle => "Idle",
+        TerminalSidebarProjectStatus::Running => "Running",
+    };
+    let mut subtitle = path.into_iter().collect::<Vec<_>>();
+    if let Some(branch) = header.branch {
+        subtitle.push(branch);
+    }
+    subtitle.push(status.to_string());
+
+    let mut content = Flex::column()
+        .with_main_axis_size(MainAxisSize::Min)
+        .with_cross_axis_alignment(CrossAxisAlignment::Start)
+        .with_spacing(1.);
+    content.add_child(
+        Text::new_inline(title, appearance.ui_font_family(), 12.)
+            .with_color(theme.main_text_color(theme.background()).into())
+            .finish(),
+    );
+    content.add_child(
+        Text::new_inline(subtitle.join(" · "), appearance.ui_font_family(), 10.)
+            .with_color(theme.sub_text_color(theme.background()).into())
+            .with_clip(ClipConfig::ellipsis())
+            .finish(),
+    );
+    Container::new(content.finish())
+        .with_padding(Padding::uniform(8.).with_top(12.).with_bottom(4.))
+        .finish()
+}
+
 fn render_groups(
     state: &VerticalTabsPanelState,
     workspace: &Workspace,
@@ -1902,6 +2125,8 @@ fn render_groups(
     }
 
     let is_any_pane_dragging = any_workspace_pane_being_dragged(workspace, app);
+    let project_headers = ChannelState::is_terminal_only()
+        .then(|| terminal_sidebar_project_headers_for_visible_units(workspace, &visible_tabs, app));
     // Ghost state for cross-window drag hovering over this window's vertical tabs panel.
     let ghost_state = CrossWindowTabDrag::as_ref(app).ghost_state_for_window(workspace.window_id);
     let ghost_insertion_index = ghost_state.as_ref().map(|g| g.insertion_index);
@@ -1916,8 +2141,12 @@ fn render_groups(
     // TODO(johnturcoo) adopt horizontal tabs 'tab slot' pattern to remove this while loop.
     let total_visible = visible_tabs.len();
     let mut i = 0;
+    let mut project_headers = project_headers.into_iter().flatten();
     while i < total_visible {
         let (tab_index, ref filtered_pane_ids) = visible_tabs[i];
+        if let Some(header) = project_headers.next().flatten() {
+            groups.add_child(render_terminal_sidebar_project_header(header, appearance));
+        }
         if ghost_insertion_index == Some(tab_index) {
             groups.add_child(render_ghost_vertical_tab_slot(workspace, app));
         }

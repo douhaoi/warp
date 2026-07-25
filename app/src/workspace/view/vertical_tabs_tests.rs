@@ -7,17 +7,20 @@ use warpui::elements::PositionedElementOffsetBounds;
 
 use super::{
     AgentTabTextPreference, SummaryPaneKind, SummaryPaneKindIcons, TerminalAgentText,
-    TerminalPrimaryLineData, TerminalPrimaryLineFont, VerticalTabsDetailTarget,
-    VerticalTabsDetailTargetKind, VerticalTabsSummaryBranchEntry, VerticalTabsSummaryData,
-    VerticalTabsSummaryPrimaryLabel, branch_label_display, coalesce_summary_branch_entries,
-    code_detail_kind_label, compact_branch_subtitle_display, detail_sidecar_width_and_bounds,
-    detail_target_for_hovered_row, non_terminal_search_text_fragments,
-    pane_ids_for_display_granularity, pane_search_text_fragments, preferred_agent_tab_titles,
-    push_normalized_unique_summary_label, search_fragments_contain_query,
-    select_summary_pane_kind_icons, should_keep_detail_sidecar_visible_for_mouse_position,
-    should_show_tab_group_header, sort_summary_primary_labels_status_first, summary_overflow_count,
+    TerminalPrimaryLineData, TerminalPrimaryLineFont, TerminalSidebarProjectHeader,
+    TerminalSidebarProjectKey, TerminalSidebarProjectMetadata, TerminalSidebarProjectStatus,
+    VerticalTabsDetailTarget, VerticalTabsDetailTargetKind, VerticalTabsSummaryBranchEntry,
+    VerticalTabsSummaryData, VerticalTabsSummaryPrimaryLabel, branch_label_display,
+    coalesce_summary_branch_entries, code_detail_kind_label, compact_branch_subtitle_display,
+    detail_sidecar_width_and_bounds, detail_target_for_hovered_row,
+    non_terminal_search_text_fragments, pane_ids_for_display_granularity,
+    pane_search_text_fragments, preferred_agent_tab_titles, push_normalized_unique_summary_label,
+    search_fragments_contain_query, select_summary_pane_kind_icons,
+    should_keep_detail_sidecar_visible_for_mouse_position, should_show_tab_group_header,
+    sort_summary_primary_labels_status_first, summary_overflow_count,
     summary_search_text_fragments, terminal_kind_badge_label, terminal_primary_line_data,
     terminal_pull_request_badge_label, terminal_search_text_fragments,
+    terminal_sidebar_project_headers_for_units, terminal_sidebar_project_pane_ids,
     terminal_title_fallback_font, uses_outer_group_container, visible_pane_ids_for_detail_target,
     vtab_diff_stats_text,
 };
@@ -28,6 +31,41 @@ use crate::pane_group::{PaneId, TerminalPaneId};
 use crate::safe_triangle::SafeTriangle;
 use crate::terminal::CLIAgent;
 use crate::workspace::tab_settings::VerticalTabsDisplayGranularity;
+use remote_server::HostId;
+use warp_util::local_or_remote_path::LocalOrRemotePath;
+use warp_util::remote_path::RemotePath;
+use warp_util::standardized_path::StandardizedPath;
+
+fn terminal_sidebar_project_metadata<'a>(
+    cwd: Option<&'a LocalOrRemotePath>,
+    repo_root: Option<&'a LocalOrRemotePath>,
+    branch: Option<&'a str>,
+    is_running: bool,
+    has_observed_command_lifecycle: bool,
+) -> TerminalSidebarProjectMetadata<'a> {
+    TerminalSidebarProjectMetadata {
+        cwd,
+        repo_root,
+        branch,
+        is_running,
+        has_observed_command_lifecycle,
+    }
+}
+
+fn local_path(path: &str) -> LocalOrRemotePath {
+    LocalOrRemotePath::Local(PathBuf::from(path))
+}
+
+fn remote_path(host_id: &str, path: &str) -> LocalOrRemotePath {
+    LocalOrRemotePath::Remote(RemotePath::new(
+        HostId::new(host_id.to_string()),
+        StandardizedPath::try_new(path).expect("test path should be absolute"),
+    ))
+}
+
+fn project_header(header: &Option<TerminalSidebarProjectHeader>) -> &TerminalSidebarProjectHeader {
+    header.as_ref().expect("project header should be rendered")
+}
 
 fn label(text: &str) -> VerticalTabsSummaryPrimaryLabel {
     VerticalTabsSummaryPrimaryLabel {
@@ -43,6 +81,237 @@ fn code_summary_kind(title: &str) -> SummaryPaneKind {
     SummaryPaneKind::Code {
         title: title.to_string(),
     }
+}
+
+#[test]
+fn terminal_sidebar_project_pane_ids_include_all_visible_panes_without_a_filter() {
+    let first = pane_id();
+    let second = pane_id();
+
+    assert_eq!(
+        terminal_sidebar_project_pane_ids(&[first, second], None),
+        vec![first, second]
+    );
+}
+
+#[test]
+fn terminal_sidebar_project_pane_ids_use_the_search_filter_when_present() {
+    let first = pane_id();
+    let second = pane_id();
+
+    assert_eq!(
+        terminal_sidebar_project_pane_ids(&[first, second], Some(&[second])),
+        vec![second]
+    );
+}
+
+#[test]
+fn terminal_sidebar_project_prefers_repo_root_over_working_directory() {
+    let cwd = local_path("/work/warp/app");
+    let repo_root = local_path("/work/warp");
+    let headers =
+        terminal_sidebar_project_headers_for_units(&[vec![terminal_sidebar_project_metadata(
+            Some(&cwd),
+            Some(&repo_root),
+            Some("main"),
+            false,
+            true,
+        )]]);
+
+    assert_eq!(
+        project_header(&headers[0]).key,
+        TerminalSidebarProjectKey::Path(repo_root)
+    );
+}
+
+#[test]
+fn terminal_sidebar_project_keeps_remote_host_identity_in_its_key() {
+    let first = remote_path("host-a", "/work/warp");
+    let second = remote_path("host-b", "/work/warp");
+    let headers = terminal_sidebar_project_headers_for_units(&[
+        vec![terminal_sidebar_project_metadata(
+            Some(&first),
+            None,
+            None,
+            false,
+            false,
+        )],
+        vec![terminal_sidebar_project_metadata(
+            Some(&second),
+            None,
+            None,
+            false,
+            false,
+        )],
+    ]);
+
+    assert_ne!(
+        project_header(&headers[0]).key,
+        project_header(&headers[1]).key
+    );
+}
+
+#[test]
+fn terminal_sidebar_project_headers_preserve_unit_order_and_only_split_adjacent_keys() {
+    let first = local_path("/work/first");
+    let second = local_path("/work/second");
+    let headers = terminal_sidebar_project_headers_for_units(&[
+        vec![terminal_sidebar_project_metadata(
+            Some(&second),
+            None,
+            None,
+            false,
+            false,
+        )],
+        vec![terminal_sidebar_project_metadata(
+            Some(&first),
+            None,
+            None,
+            false,
+            false,
+        )],
+        vec![terminal_sidebar_project_metadata(
+            Some(&first),
+            None,
+            None,
+            false,
+            false,
+        )],
+        vec![terminal_sidebar_project_metadata(
+            Some(&second),
+            None,
+            None,
+            false,
+            false,
+        )],
+    ]);
+
+    assert_eq!(
+        project_header(&headers[0]).key,
+        TerminalSidebarProjectKey::Path(second.clone())
+    );
+    assert_eq!(
+        project_header(&headers[1]).key,
+        TerminalSidebarProjectKey::Path(first)
+    );
+    assert_eq!(headers[2], None);
+    assert_eq!(
+        project_header(&headers[3]).key,
+        TerminalSidebarProjectKey::Path(second)
+    );
+}
+
+#[test]
+fn terminal_sidebar_project_manual_group_is_one_unsplittable_render_unit() {
+    let first = local_path("/work/first");
+    let second = local_path("/work/second");
+    let headers = terminal_sidebar_project_headers_for_units(&[
+        vec![
+            terminal_sidebar_project_metadata(Some(&first), None, None, false, false),
+            terminal_sidebar_project_metadata(Some(&second), None, None, false, false),
+        ],
+        vec![terminal_sidebar_project_metadata(
+            Some(&first),
+            None,
+            None,
+            false,
+            false,
+        )],
+    ]);
+
+    assert_eq!(headers.len(), 2);
+    assert_eq!(
+        project_header(&headers[0]).key,
+        TerminalSidebarProjectKey::Path(first)
+    );
+    assert_eq!(headers[1], None);
+}
+
+#[test]
+fn terminal_sidebar_project_unassigned_run_is_stable() {
+    let headers = terminal_sidebar_project_headers_for_units(&[vec![], vec![]]);
+
+    assert_eq!(
+        project_header(&headers[0]).key,
+        TerminalSidebarProjectKey::Unassigned
+    );
+    assert_eq!(headers[1], None);
+}
+
+#[test]
+fn terminal_sidebar_project_aggregates_running_idle_and_unknown_statuses() {
+    let running = local_path("/work/running");
+    let idle = local_path("/work/idle");
+    let unknown = local_path("/work/unknown");
+    let headers = terminal_sidebar_project_headers_for_units(&[
+        vec![terminal_sidebar_project_metadata(
+            Some(&running),
+            None,
+            Some("main"),
+            false,
+            true,
+        )],
+        vec![terminal_sidebar_project_metadata(
+            Some(&running),
+            None,
+            Some("main"),
+            true,
+            true,
+        )],
+        vec![terminal_sidebar_project_metadata(
+            Some(&idle),
+            None,
+            Some("main"),
+            false,
+            true,
+        )],
+        vec![terminal_sidebar_project_metadata(
+            Some(&unknown),
+            None,
+            None,
+            false,
+            false,
+        )],
+    ]);
+
+    assert_eq!(
+        project_header(&headers[0]).status,
+        TerminalSidebarProjectStatus::Running
+    );
+    assert_eq!(project_header(&headers[0]).branch.as_deref(), Some("main"));
+    assert_eq!(headers[1], None);
+    assert_eq!(
+        project_header(&headers[2]).status,
+        TerminalSidebarProjectStatus::Idle
+    );
+    assert_eq!(
+        project_header(&headers[3]).status,
+        TerminalSidebarProjectStatus::Unknown
+    );
+}
+
+#[test]
+fn terminal_sidebar_project_hides_an_unstable_branch() {
+    let project = local_path("/work/warp");
+    let headers = terminal_sidebar_project_headers_for_units(&[
+        vec![terminal_sidebar_project_metadata(
+            Some(&project),
+            None,
+            Some("main"),
+            false,
+            true,
+        )],
+        vec![terminal_sidebar_project_metadata(
+            Some(&project),
+            None,
+            Some("feature/sidebar"),
+            false,
+            true,
+        )],
+    ]);
+
+    assert_eq!(project_header(&headers[0]).branch, None);
+    assert_eq!(headers[1], None);
 }
 
 #[test]
