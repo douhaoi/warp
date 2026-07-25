@@ -1,6 +1,7 @@
 use instant::Duration;
 use settings::{PrivatePreferences, PublicPreferences, Setting, SettingsManager};
 use settings_value::SettingsValue;
+use warp_core::channel::ProductProfile;
 use warp_core::features::FeatureFlag;
 use warp_core::settings::macros::define_settings_group;
 use warp_core::settings::{SupportedPlatforms, SyncToCloud};
@@ -9,10 +10,11 @@ use warpui::SingletonEntity;
 use warpui_extras::user_preferences;
 
 use super::{
-    SETTINGS_FILE_MIGRATION_COMPLETE_KEY, migrate_native_settings_to_settings_file,
-    needs_settings_file_migration_for_path,
+    SETTINGS_FILE_MIGRATION_COMPLETE_KEY, apply_terminal_only_vertical_tabs_default,
+    migrate_native_settings_to_settings_file, needs_settings_file_migration_for_path,
 };
 use crate::terminal::session_settings::{NotificationsMode, NotificationsSettings};
+use crate::workspace::tab_settings::TabSettings;
 
 // A minimal settings group with one public and one private setting, used to
 // verify that migration only copies public settings.
@@ -56,6 +58,61 @@ fn init_test_app(ctx: &mut warpui::AppContext) {
     });
     ctx.add_singleton_model(|_| SettingsManager::default());
     MigrationTestSettings::register(ctx);
+    TabSettings::register(ctx);
+}
+
+#[test]
+fn terminal_only_enables_vertical_tabs_when_unset() {
+    warpui::App::test((), |mut app| async move {
+        app.update(init_test_app);
+
+        app.update(|ctx| {
+            apply_terminal_only_vertical_tabs_default(ProductProfile::TerminalOnly, ctx);
+        });
+
+        app.read(|ctx| {
+            let settings = TabSettings::as_ref(ctx);
+            assert!(*settings.use_vertical_tabs.value());
+            assert!(settings.use_vertical_tabs.is_value_explicitly_set());
+        });
+    });
+}
+
+#[test]
+fn terminal_only_keeps_explicit_vertical_tabs_choice() {
+    warpui::App::test((), |mut app| async move {
+        app.update(init_test_app);
+
+        app.update(|ctx| {
+            TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+                settings.use_vertical_tabs.set_value(false, ctx).unwrap();
+            });
+            apply_terminal_only_vertical_tabs_default(ProductProfile::TerminalOnly, ctx);
+        });
+
+        app.read(|ctx| {
+            let settings = TabSettings::as_ref(ctx);
+            assert!(!*settings.use_vertical_tabs.value());
+            assert!(settings.use_vertical_tabs.is_value_explicitly_set());
+        });
+    });
+}
+
+#[test]
+fn full_profile_keeps_vertical_tabs_unset() {
+    warpui::App::test((), |mut app| async move {
+        app.update(init_test_app);
+
+        app.update(|ctx| {
+            apply_terminal_only_vertical_tabs_default(ProductProfile::Full, ctx);
+        });
+
+        app.read(|ctx| {
+            let settings = TabSettings::as_ref(ctx);
+            assert!(!*settings.use_vertical_tabs.value());
+            assert!(!settings.use_vertical_tabs.is_value_explicitly_set());
+        });
+    });
 }
 
 #[test]

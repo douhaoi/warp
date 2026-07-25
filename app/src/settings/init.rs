@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use settings::{Setting as _, SettingsManager};
+use warp_core::channel::{ChannelState, ProductProfile};
 use warp_core::features::FeatureFlag;
 use warp_core::semantic_selection::SemanticSelection;
 use warp_errors::report_if_error;
@@ -131,6 +132,8 @@ pub fn init(
     if needs_settings_file_migration(ctx) {
         migrate_native_settings_to_settings_file(ctx);
     }
+
+    apply_terminal_only_vertical_tabs_default(ChannelState::product_profile(), ctx);
 
     let use_thin_strokes = *FontSettings::as_ref(ctx).use_thin_strokes;
 
@@ -451,6 +454,21 @@ fn migrate_native_settings_to_settings_file(ctx: &mut AppContext) {
             .write_value(SETTINGS_FILE_MIGRATION_COMPLETE_KEY, "true".to_owned())
             .map_err(|err| anyhow::anyhow!(err))
     );
+}
+
+fn apply_terminal_only_vertical_tabs_default(
+    product_profile: ProductProfile,
+    ctx: &mut AppContext,
+) {
+    if product_profile != ProductProfile::TerminalOnly {
+        return;
+    }
+
+    TabSettings::handle(ctx).update(ctx, |settings, ctx| {
+        if !settings.use_vertical_tabs.is_value_explicitly_set() {
+            report_if_error!(settings.use_vertical_tabs.set_value(true, ctx));
+        }
+    });
 }
 
 #[cfg(any(test, all(feature = "tui", feature = "test-util")))]
