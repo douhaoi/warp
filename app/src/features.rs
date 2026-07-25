@@ -566,6 +566,7 @@ fn terminal_only_feature_allowed(flag: FeatureFlag) -> bool {
             | FeatureFlag::GroupedTabs
             | FeatureFlag::PinnedTabs
             | FeatureFlag::DirectoryTabColors
+            | FeatureFlag::SkipFirebaseAnonymousUser
             | FeatureFlag::AsyncFind
             | FeatureFlag::TrimTrailingBlankLines
             | FeatureFlag::MinimalistUI
