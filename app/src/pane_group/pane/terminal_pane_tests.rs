@@ -96,3 +96,22 @@ fn inherit_share_cascades_ambient_source_for_cloud_orchestrator() {
         ),
     }
 }
+
+#[test]
+fn terminal_sidebar_event_ignores_a_stale_pane_stack_view_after_rehost() {
+    let previous_active_view = EntityId::new();
+    let current_active_view = EntityId::new();
+
+    assert!(!terminal_sidebar_event_is_for_active_view(
+        Some(current_active_view),
+        previous_active_view
+    ));
+    assert!(terminal_sidebar_event_is_for_active_view(
+        Some(current_active_view),
+        current_active_view
+    ));
+    assert!(!terminal_sidebar_event_is_for_active_view(
+        None,
+        current_active_view
+    ));
+}

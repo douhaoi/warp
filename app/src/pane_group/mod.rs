@@ -150,7 +150,7 @@ use crate::terminal::view::load_ai_conversation::{
 use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::{
     BlockNotification, ConversationRestorationInNewPaneType, ExecuteCommandEvent,
-    LeftPanelTargetView, SyncEvent, TerminalViewState,
+    LeftPanelTargetView, SyncEvent, TerminalSidebarMetadata, TerminalViewState,
 };
 use crate::terminal::{
     MockTerminalManager, ShareBlockModal, ShareBlockModalEvent, ShellLaunchData, ShellLaunchState,
@@ -528,6 +528,14 @@ pub enum Event {
     /// Event used to propagate a state change for one of the terminal views
     /// inside this pane group.
     TerminalViewStateChanged,
+    TerminalSidebarMetadataChanged {
+        pane_id: PaneId,
+        metadata: TerminalSidebarMetadata,
+    },
+    TerminalSidebarMetadataRemoved {
+        pane_id: PaneId,
+        was_visible: bool,
+    },
     /// Event used to propagate guided onboarding tutorial completion to the workspace.
     OnboardingTutorialCompleted,
     // Tell the workspace to open the workflow modal.
@@ -4151,6 +4159,9 @@ impl PaneGroup {
             .get(&pane_id)
             .expect("Just inserted pane");
         if !self.try_attach_pane(pane.as_ref(), ctx) {
+            if pane_id.as_terminal_pane_id().is_some() {
+                self.remove_terminal_sidebar_metadata(pane_id, ctx);
+            }
             self.pane_contents.remove(&pane_id);
             return None;
         }
@@ -4201,8 +4212,47 @@ impl PaneGroup {
         self.pane_contents.keys().copied()
     }
 
+    pub(crate) fn forward_terminal_sidebar_metadata(
+        &mut self,
+        pane_id: PaneId,
+        metadata: TerminalSidebarMetadata,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.emit(Event::TerminalSidebarMetadataChanged { pane_id, metadata });
+    }
+
+    fn remove_terminal_sidebar_metadata(&mut self, pane_id: PaneId, ctx: &mut ViewContext<Self>) {
+        ctx.emit(Event::TerminalSidebarMetadataRemoved {
+            pane_id,
+            was_visible: self.is_terminal_sidebar_pane_visible(pane_id),
+        });
+    }
+
+    /// Captures the active terminal view for every terminal pane without
+    /// locking a terminal model. Workspace calls this only while subscribing
+    /// to, restoring, or adopting one pane group; it is never a render-time or
+    /// workspace-wide scan.
+    pub(crate) fn terminal_sidebar_metadata_snapshots(
+        &self,
+        ctx: &AppContext,
+    ) -> Vec<(PaneId, TerminalSidebarMetadata)> {
+        self.panes_of::<TerminalPane>()
+            .map(|pane| {
+                let pane_id = pane.id();
+                let metadata = pane
+                    .terminal_view(ctx)
+                    .read(ctx, |view, ctx| view.terminal_sidebar_metadata(ctx));
+                (pane_id, metadata)
+            })
+            .collect()
+    }
+
     pub fn has_pane_id(&self, pane_id: PaneId) -> bool {
         self.pane_contents.contains_key(&pane_id)
+    }
+
+    pub(crate) fn is_terminal_sidebar_pane_visible(&self, pane_id: PaneId) -> bool {
+        self.panes.is_pane_in_tree(pane_id) && !self.panes.is_pane_hidden(&pane_id)
     }
 
     /// Get the notebook view within the pane at `pane_index`.
@@ -4311,6 +4361,9 @@ impl PaneGroup {
         pane_id: &PaneId,
         ctx: &mut ViewContext<Self>,
     ) -> Option<Box<dyn AnyPaneContent>> {
+        if pane_id.as_terminal_pane_id().is_some() {
+            self.remove_terminal_sidebar_metadata(*pane_id, ctx);
+        }
         // Clear any hidden pane entry since the pane is being permanently removed from this group.
         self.panes.remove_hidden_pane(*pane_id);
 
@@ -4822,6 +4875,9 @@ impl PaneGroup {
                 ctx,
             );
 
+            if pane_id.as_terminal_pane_id().is_some() {
+                self.remove_terminal_sidebar_metadata(pane_id, ctx);
+            }
             self.pane_contents.remove(&pane_id);
 
             // We should only remove the session id from the tree after we queried
@@ -4951,6 +5007,9 @@ impl PaneGroup {
             // For permanent replacements, clean up the original pane
             if !is_temporary {
                 self.clean_up_pane(original_pane_id, ctx);
+                if original_pane_id.as_terminal_pane_id().is_some() {
+                    self.remove_terminal_sidebar_metadata(original_pane_id, ctx);
+                }
                 self.pane_contents.remove(&original_pane_id);
             }
             self.restore_missing_child_agent_panes_for_terminal_pane_if_needed(
@@ -4970,6 +5029,9 @@ impl PaneGroup {
                 }
             );
             self.clean_up_pane(replacement_pane_id, ctx);
+            if replacement_pane_id.as_terminal_pane_id().is_some() {
+                self.remove_terminal_sidebar_metadata(replacement_pane_id, ctx);
+            }
             self.pane_contents.remove(&replacement_pane_id);
         }
 
@@ -4985,6 +5047,9 @@ impl PaneGroup {
     ) -> Option<PaneId> {
         let original_pane_id = self.panes.revert_temporary_replacement(replacement_pane_id);
         self.clean_up_pane(replacement_pane_id, ctx);
+        if replacement_pane_id.as_terminal_pane_id().is_some() {
+            self.remove_terminal_sidebar_metadata(replacement_pane_id, ctx);
+        }
         self.pane_contents.remove(&replacement_pane_id);
 
         if let Some(original_id) = original_pane_id {
@@ -5460,6 +5525,9 @@ impl PaneGroup {
         let pane = pane_data.as_pane();
         pane.detach(self, DetachType::Closed, ctx);
 
+        if pane_id.as_terminal_pane_id().is_some() {
+            self.remove_terminal_sidebar_metadata(pane_id, ctx);
+        }
         if !self.panes.remove(pane_id) {
             log::warn!("Attempted to cleanup pane {pane_id} but it was not found in the tree");
         }
@@ -6611,6 +6679,9 @@ impl PaneGroup {
 
         if !self.try_attach_pane(pane.as_ref(), ctx) {
             // Remove the pane we didn't end up attaching the pane.
+            if pane_id.as_terminal_pane_id().is_some() {
+                self.remove_terminal_sidebar_metadata(pane_id, ctx);
+            }
             self.pane_contents.remove(&pane_id);
             return None;
         }
@@ -6646,6 +6717,9 @@ impl PaneGroup {
             );
             self.panes.remove_hidden_pane(pane_id);
             self.clean_up_pane(pane_id, ctx);
+            if pane_id.as_terminal_pane_id().is_some() {
+                self.remove_terminal_sidebar_metadata(pane_id, ctx);
+            }
             self.pane_contents.remove(&pane_id);
             return None;
         }
@@ -7236,6 +7310,9 @@ impl PaneGroup {
         }
 
         // Remove the child from the tree if it was a real sibling.
+        if child_pane_id.as_terminal_pane_id().is_some() {
+            self.remove_terminal_sidebar_metadata(child_pane_id, ctx);
+        }
         if self.panes.is_pane_in_tree(child_pane_id) && !self.panes.remove(child_pane_id) {
             report_error!("take_child_agent_pane_for_split_off: failed to remove pane from tree");
         }

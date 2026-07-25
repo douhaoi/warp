@@ -1717,6 +1717,8 @@ pub enum Event {
     /// Event used to propagate a state change for one of the terminal views
     /// inside this pane group.
     TerminalViewStateChanged,
+    /// The terminal metadata displayed by the terminal sidebar changed.
+    TerminalSidebarMetadataChanged(TerminalSidebarMetadata),
     ShowCommandSearch(CommandSearchOptions),
     // Tell the pane group to open the workflow modal.
     OpenWorkflowModalWithCommand(String),
@@ -2419,6 +2421,19 @@ pub struct TerminalViewStateChange {
     pub state: TerminalViewState,
     pub timestamp: Instant,
 }
+/// Event-driven terminal metadata consumed by the terminal sidebar.
+///
+/// This is deliberately derived from state already owned by `TerminalView`.
+/// In particular, it must not acquire the terminal model lock: sidebar updates
+/// can be delivered while terminal lifecycle work is already holding that lock.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TerminalSidebarMetadata {
+    pub cwd: Option<LocalOrRemotePath>,
+    pub repo_root: Option<LocalOrRemotePath>,
+    pub branch: Option<String>,
+    pub is_running: bool,
+    pub has_observed_command_lifecycle: bool,
+}
 #[derive(Clone, Copy)]
 struct CtrlCActiveBlockState {
     is_long_running: bool,
@@ -2675,6 +2690,14 @@ pub struct TerminalView {
     view_id: EntityId,
 
     current_state: TerminalViewStateChange,
+
+    /// Command lifecycle state observed from the shell-integration hooks.
+    /// This is intentionally independent of `TerminalModel::is_long_running`:
+    /// the sidebar must not acquire the model lock in its event path.
+    sidebar_command_running: bool,
+    sidebar_command_block_id: Option<BlockId>,
+    sidebar_command_lifecycle_observed: bool,
+    last_emitted_terminal_sidebar_metadata: Option<TerminalSidebarMetadata>,
 
     /// Whether we've already emitted a chrome refresh for the active block after it crossed the
     /// long-running threshold. Reset when the active command starts and finishes.
@@ -2986,6 +3009,86 @@ enum BlockMetadataUpdateSource {
 }
 
 impl TerminalView {
+    /// Returns the sidebar metadata from cached view state without locking the
+    /// terminal model. `is_running` is only meaningful once a shell-integration
+    /// command lifecycle has been observed.
+    pub fn terminal_sidebar_metadata(&self, ctx: &AppContext) -> TerminalSidebarMetadata {
+        TerminalSidebarMetadata {
+            cwd: self.terminal_sidebar_cwd(ctx),
+            repo_root: self.current_repo_path.clone(),
+            branch: self.current_git_branch(ctx),
+            is_running: self.sidebar_command_running,
+            has_observed_command_lifecycle: self.sidebar_command_lifecycle_observed,
+        }
+    }
+
+    /// Returns the active CWD for the sidebar from in-memory terminal state.
+    ///
+    /// Unlike [`Self::pwd_as_local_or_remote`], this intentionally avoids the
+    /// terminal model lock and local-path canonicalization. Sidebar metadata
+    /// updates can be emitted while terminal lifecycle work is holding that
+    /// lock, and no sidebar state needs filesystem normalization.
+    fn terminal_sidebar_cwd(&self, ctx: &AppContext) -> Option<LocalOrRemotePath> {
+        let metadata = self.active_block_metadata.as_ref()?;
+        let session = self.sessions.as_ref(ctx).get(metadata.session_id()?)?;
+        let cwd = metadata.current_working_directory()?;
+
+        match session.session_type() {
+            SessionType::Local => Some(LocalOrRemotePath::Local(
+                session
+                    .launch_data()
+                    .and_then(|data| data.maybe_convert_absolute_path(cwd))
+                    .unwrap_or_else(|| PathBuf::from(cwd)),
+            )),
+            SessionType::WarpifiedRemote {
+                host_id: Some(host_id),
+            } => Some(LocalOrRemotePath::Remote(RemotePath::new(
+                host_id,
+                StandardizedPath::try_new(cwd).ok()?,
+            ))),
+            SessionType::WarpifiedRemote { host_id: None } => None,
+        }
+    }
+
+    fn emit_terminal_sidebar_metadata_changed(&mut self, ctx: &mut ViewContext<Self>) {
+        if !ChannelState::is_terminal_only() {
+            return;
+        }
+
+        let metadata = self.terminal_sidebar_metadata(ctx);
+        if self.last_emitted_terminal_sidebar_metadata.as_ref() == Some(&metadata) {
+            return;
+        }
+
+        self.last_emitted_terminal_sidebar_metadata = Some(metadata.clone());
+        ctx.emit(Event::TerminalSidebarMetadataChanged(metadata));
+    }
+
+    fn update_terminal_sidebar_command_state(
+        &mut self,
+        is_running: bool,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        let has_observed_command_lifecycle = true;
+        if self.sidebar_command_running == is_running
+            && self.sidebar_command_lifecycle_observed == has_observed_command_lifecycle
+        {
+            return;
+        }
+
+        self.sidebar_command_running = is_running;
+        self.sidebar_command_lifecycle_observed = has_observed_command_lifecycle;
+        self.emit_terminal_sidebar_metadata_changed(ctx);
+    }
+
+    fn should_finish_terminal_sidebar_command(
+        tracked_block_id: Option<&BlockId>,
+        completed_block_id: &BlockId,
+        is_in_band_command: bool,
+    ) -> bool {
+        !is_in_band_command && tracked_block_id == Some(completed_block_id)
+    }
+
     /// Returns the path to the current repository, if any.
     pub fn current_repo_path(&self) -> Option<&LocalOrRemotePath> {
         self.current_repo_path.as_ref()
@@ -4365,6 +4468,10 @@ impl TerminalView {
             was_ever_visible: false,
             view_id: ctx.view_id(),
             current_state: TerminalViewStateChange::default(),
+            sidebar_command_running: false,
+            sidebar_command_block_id: None,
+            sidebar_command_lifecycle_observed: false,
+            last_emitted_terminal_sidebar_metadata: None,
             did_notify_long_running: false,
             is_focused_and_active: true,
             current_prompt,
@@ -4786,6 +4893,7 @@ impl TerminalView {
                         if matches_host {
                             me.current_repo_path = None;
                             ctx.emit(Event::Pane(PaneEvent::RepoChanged));
+                            me.emit_terminal_sidebar_metadata_changed(ctx);
                         }
                     }
                     RemoteServerManagerEvent::SessionConnecting { .. }
@@ -5039,6 +5147,7 @@ impl TerminalView {
             );
         }
         self.refresh_pane_header(ctx);
+        self.emit_terminal_sidebar_metadata_changed(ctx);
         ctx.emit(Event::TerminalViewStateChanged);
         ctx.notify();
     }
@@ -11526,6 +11635,7 @@ impl TerminalView {
 
                             if old_repo_path != me.current_repo_path {
                                 ctx.emit(Event::Pane(PaneEvent::RepoChanged));
+                                me.emit_terminal_sidebar_metadata_changed(ctx);
                             }
 
                             // `block_completed_callbacks` are scheduled via
@@ -11679,6 +11789,7 @@ impl TerminalView {
             // prompt area so it's up to date.
             ctx.notify();
         });
+        self.emit_terminal_sidebar_metadata_changed(ctx);
     }
 
     fn handle_terminal_event(&mut self, event: &ModelEvent, ctx: &mut ViewContext<Self>) {
@@ -11785,6 +11896,14 @@ impl TerminalView {
             ModelEvent::BlockCompleted(block_completed_event) => {
                 record_trace_event!("command_execution:block_completed");
                 end_trace_after_next!("window:redraw:end");
+                if Self::should_finish_terminal_sidebar_command(
+                    self.sidebar_command_block_id.as_ref(),
+                    &block_completed_event.block_id,
+                    matches!(&block_completed_event.block_type, BlockType::InBandCommand),
+                ) {
+                    self.sidebar_command_block_id = None;
+                    self.update_terminal_sidebar_command_state(false, ctx);
+                }
                 let block_completed_event_clone = block_completed_event.clone();
                 self.input.update(ctx, |input, ctx| {
                     input.handle_block_completed_event(block_completed_event_clone, ctx);
@@ -11914,6 +12033,8 @@ impl TerminalView {
                     return;
                 }
                 self.did_notify_long_running = false;
+                self.sidebar_command_block_id = Some(block_id.clone());
+                self.update_terminal_sidebar_command_state(true, ctx);
 
                 // Snapshot the prompt state as of when the command began executing.
                 // Commands may themselves affect the prompt (if running `git checkout`), for

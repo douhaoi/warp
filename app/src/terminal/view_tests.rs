@@ -8266,3 +8266,30 @@ fn terminal_only_terminal_actions_disable_share_workflow_and_ai_entrypoints() {
     ));
     assert!(!is_terminal_only_action_disabled(&TerminalAction::Copy));
 }
+
+#[test]
+fn terminal_sidebar_command_completion_matches_the_foreground_block_only() {
+    let tracked_block_id = BlockId::new();
+    let other_block_id = BlockId::new();
+
+    assert!(TerminalView::should_finish_terminal_sidebar_command(
+        Some(&tracked_block_id),
+        &tracked_block_id,
+        false,
+    ));
+    assert!(!TerminalView::should_finish_terminal_sidebar_command(
+        Some(&tracked_block_id),
+        &other_block_id,
+        false,
+    ));
+    assert!(!TerminalView::should_finish_terminal_sidebar_command(
+        Some(&tracked_block_id),
+        &tracked_block_id,
+        true,
+    ));
+    assert!(!TerminalView::should_finish_terminal_sidebar_command(
+        None,
+        &tracked_block_id,
+        false,
+    ));
+}

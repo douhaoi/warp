@@ -428,7 +428,7 @@ use crate::terminal::view::ssh_file_upload::FileUploadId;
 use crate::terminal::view::{
     AgentOnboardingVersion, ConversationRestorationInNewPaneType, LeftPanelTargetView,
     NOTIFICATIONS_TROUBLESHOOT_URL, OnboardingIntention, OnboardingVersion, SyncEvent,
-    SyncInputType, TerminalAction,
+    SyncInputType, TerminalAction, TerminalSidebarMetadata,
 };
 use crate::terminal::warpify::settings::WarpifySettings;
 use crate::terminal::{self, BlockListSettings, SizeInfo, TerminalModel, TerminalView};
@@ -1055,6 +1055,89 @@ enum TabBarSlot {
     },
 }
 
+/// Cached, event-driven metadata for one terminal pane in this workspace.
+///
+/// The future terminal sidebar reads this cache rather than inspecting every
+/// terminal while rendering.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TerminalSidebarSnapshot {
+    pub(super) pane_group_id: EntityId,
+    pub(super) pane_id: PaneId,
+    pub(super) cwd: Option<LocalOrRemotePath>,
+    pub(super) repo_root: Option<LocalOrRemotePath>,
+    pub(super) branch: Option<String>,
+    pub(super) is_running: bool,
+    pub(super) has_observed_command_lifecycle: bool,
+}
+
+impl TerminalSidebarSnapshot {
+    fn new(pane_group_id: EntityId, pane_id: PaneId, metadata: TerminalSidebarMetadata) -> Self {
+        Self {
+            pane_group_id,
+            pane_id,
+            cwd: metadata.cwd,
+            repo_root: metadata.repo_root,
+            branch: metadata.branch,
+            is_running: metadata.is_running,
+            has_observed_command_lifecycle: metadata.has_observed_command_lifecycle,
+        }
+    }
+
+    fn upsert(
+        snapshots: &mut HashMap<PaneId, TerminalSidebarSnapshot>,
+        snapshot: TerminalSidebarSnapshot,
+    ) -> bool {
+        if snapshots.get(&snapshot.pane_id) == Some(&snapshot) {
+            return false;
+        }
+
+        snapshots.insert(snapshot.pane_id, snapshot);
+        true
+    }
+
+    fn remove(snapshots: &mut HashMap<PaneId, TerminalSidebarSnapshot>, pane_id: PaneId) -> bool {
+        snapshots.remove(&pane_id).is_some()
+    }
+
+    fn remove_for_pane_group(
+        snapshots: &mut HashMap<PaneId, TerminalSidebarSnapshot>,
+        pane_group_id: EntityId,
+        pane_id: PaneId,
+    ) -> bool {
+        if snapshots
+            .get(&pane_id)
+            .is_some_and(|snapshot| snapshot.pane_group_id == pane_group_id)
+        {
+            return Self::remove(snapshots, pane_id);
+        }
+
+        false
+    }
+
+    fn reconcile_group(
+        snapshots: &mut HashMap<PaneId, TerminalSidebarSnapshot>,
+        pane_group_id: EntityId,
+        incoming: impl IntoIterator<Item = TerminalSidebarSnapshot>,
+    ) -> bool {
+        let incoming: HashMap<_, _> = incoming
+            .into_iter()
+            .map(|snapshot| (snapshot.pane_id, snapshot))
+            .collect();
+        let mut changed = false;
+
+        snapshots.retain(|pane_id, snapshot| {
+            let keep = snapshot.pane_group_id != pane_group_id || incoming.contains_key(pane_id);
+            changed |= !keep;
+            keep
+        });
+
+        for snapshot in incoming.into_values() {
+            changed |= Self::upsert(snapshots, snapshot);
+        }
+        changed
+    }
+}
+
 pub struct Workspace {
     window_id: WindowId,
     pub(crate) tabs: Vec<TabData>,
@@ -1201,6 +1284,7 @@ pub struct Workspace {
     left_panel_open: bool,
     vertical_tabs_panel_open: bool,
     vertical_tabs_panel: VerticalTabsPanelState,
+    terminal_sidebar_snapshots: HashMap<PaneId, TerminalSidebarSnapshot>,
     left_panel_view: ViewHandle<LeftPanelView>,
     left_panel_views: Vec<ToolPanelView>,
     right_panel_view: ViewHandle<RightPanelView>,
@@ -1260,6 +1344,99 @@ impl Workspace {
     pub(crate) fn set_suppress_detach_panes_on_window_close(&mut self, value: bool) {
         self.suppress_detach_panes_on_window_close = value;
     }
+
+    #[allow(dead_code)] // Consumed by the next vertical-tabs sidebar slice.
+    pub(super) fn terminal_sidebar_snapshot(
+        &self,
+        pane_id: PaneId,
+    ) -> Option<&TerminalSidebarSnapshot> {
+        self.terminal_sidebar_snapshots.get(&pane_id)
+    }
+
+    fn upsert_terminal_sidebar_snapshot(&mut self, snapshot: TerminalSidebarSnapshot) -> bool {
+        TerminalSidebarSnapshot::upsert(&mut self.terminal_sidebar_snapshots, snapshot)
+    }
+
+    fn remove_terminal_sidebar_snapshot(
+        &mut self,
+        pane_group_id: EntityId,
+        pane_id: PaneId,
+    ) -> bool {
+        TerminalSidebarSnapshot::remove_for_pane_group(
+            &mut self.terminal_sidebar_snapshots,
+            pane_group_id,
+            pane_id,
+        )
+    }
+
+    fn remove_terminal_sidebar_snapshots_for_pane_group(&mut self, pane_group_id: EntityId) {
+        self.terminal_sidebar_snapshots
+            .retain(|_, snapshot| snapshot.pane_group_id != pane_group_id);
+    }
+
+    fn terminal_sidebar_should_notify(
+        changed: bool,
+        is_terminal_only: bool,
+        vertical_tabs_enabled: bool,
+        use_vertical_tabs: bool,
+        panel_open: bool,
+        pane_visible: bool,
+    ) -> bool {
+        changed
+            && is_terminal_only
+            && vertical_tabs_enabled
+            && use_vertical_tabs
+            && panel_open
+            && pane_visible
+    }
+
+    fn terminal_sidebar_event_is_current(
+        &self,
+        pane_group: &ViewHandle<PaneGroup>,
+        pane_id: PaneId,
+        ctx: &AppContext,
+    ) -> bool {
+        pane_id.as_terminal_pane_id().is_some()
+            && self
+                .tabs
+                .iter()
+                .any(|tab| tab.pane_group.id() == pane_group.id())
+            && pane_group.read(ctx, |pane_group, _| pane_group.has_pane_id(pane_id))
+    }
+
+    fn hydrate_terminal_sidebar_snapshots_for_pane_group(
+        &mut self,
+        pane_group: &ViewHandle<PaneGroup>,
+        ctx: &AppContext,
+    ) {
+        if !ChannelState::is_terminal_only() {
+            return;
+        }
+
+        let pane_group_id = pane_group.id();
+        let incoming = pane_group.read(ctx, |pane_group, ctx| {
+            pane_group.terminal_sidebar_metadata_snapshots(ctx)
+        });
+        TerminalSidebarSnapshot::reconcile_group(
+            &mut self.terminal_sidebar_snapshots,
+            pane_group_id,
+            incoming.into_iter().map(|(pane_id, metadata)| {
+                TerminalSidebarSnapshot::new(pane_group_id, pane_id, metadata)
+            }),
+        );
+    }
+
+    fn subscribe_to_pane_group(
+        &mut self,
+        pane_group: &ViewHandle<PaneGroup>,
+        ctx: &mut ViewContext<Self>,
+    ) {
+        ctx.subscribe_to_view(pane_group, move |me, pane_group, event, ctx| {
+            me.handle_file_tree_event(pane_group, event, ctx)
+        });
+        self.hydrate_terminal_sidebar_snapshots_for_pane_group(pane_group, ctx);
+    }
+
     fn tab_rename_editor_font_size(ctx: &AppContext, appearance: &Appearance) -> f32 {
         if FeatureFlag::VerticalTabs.is_enabled() && *TabSettings::as_ref(ctx).use_vertical_tabs {
             match *TabSettings::as_ref(ctx)
@@ -3509,6 +3686,7 @@ impl Workspace {
             left_panel_open: false,
             vertical_tabs_panel_open: false,
             vertical_tabs_panel: Default::default(),
+            terminal_sidebar_snapshots: HashMap::new(),
             left_panel_view,
             left_panel_views,
             right_panel_view,
@@ -4400,9 +4578,7 @@ impl Workspace {
             )
         });
 
-        ctx.subscribe_to_view(&new_pane_group, move |me, pane_group, event, ctx| {
-            me.handle_file_tree_event(pane_group, event, ctx)
-        });
+        self.subscribe_to_pane_group(&new_pane_group, ctx);
 
         self.tabs.push(TabData::new(new_pane_group));
         self.activate_tab_internal(self.tab_count() - 1, ctx);
@@ -4477,9 +4653,7 @@ impl Workspace {
             )
         });
 
-        ctx.subscribe_to_view(&new_pane_group, move |me, pane_group, event, ctx| {
-            me.handle_file_tree_event(pane_group, event, ctx)
-        });
+        self.subscribe_to_pane_group(&new_pane_group, ctx);
 
         self.tabs.push(TabData::new(new_pane_group.clone()));
         let new_tab_index = self.tab_count() - 1;
@@ -12071,6 +12245,7 @@ impl Workspace {
         let tab_data = self.tabs.remove(index);
 
         let removed_pane_group_id = tab_data.pane_group.id();
+        self.remove_terminal_sidebar_snapshots_for_pane_group(removed_pane_group_id);
         self.tab_mru_order.retain(|id| *id != removed_pane_group_id);
 
         // If the closed tab was a group member, prune the group when it now
@@ -12388,10 +12563,12 @@ impl Workspace {
     /// Update this workspace when it is reopened after being closed.
     pub fn handle_reopen(&mut self, ctx: &mut ViewContext<Self>) {
         self.sync_window_button_visibility(ctx);
-        for pane_group in self.tab_views() {
+        let pane_groups: Vec<_> = self.tab_views().cloned().collect();
+        for pane_group in pane_groups {
             pane_group.update(ctx, |pane_group, ctx| {
                 pane_group.reattach_panes(ctx);
-            })
+            });
+            self.hydrate_terminal_sidebar_snapshots_for_pane_group(&pane_group, ctx);
         }
         self.update_active_session(ctx);
 
@@ -12416,6 +12593,7 @@ impl Workspace {
         tab_data.pane_group.update(ctx, |pane_group, ctx| {
             pane_group.reattach_panes(ctx);
         });
+        self.hydrate_terminal_sidebar_snapshots_for_pane_group(&tab_data.pane_group, ctx);
 
         // If the tab belonged to a group, try to re-join it by appending after
         // the group's current last member. If the group no longer exists (it was
@@ -12799,9 +12977,7 @@ impl Workspace {
             pane_group
         });
 
-        ctx.subscribe_to_view(&new_pane_group, move |me, pane_group, event, ctx| {
-            me.handle_file_tree_event(pane_group, event, ctx)
-        });
+        self.subscribe_to_pane_group(&new_pane_group, ctx);
 
         // Compute where the new tab goes and whether it inherits a group, then
         // insert it. An empty workspace has no active tab to key off of, so it
@@ -12878,9 +13054,7 @@ impl Workspace {
                 ctx,
             )
         });
-        ctx.subscribe_to_view(&new_pane_group, move |me, pane_group, event, ctx| {
-            me.handle_file_tree_event(pane_group, event, ctx)
-        });
+        self.subscribe_to_pane_group(&new_pane_group, ctx);
 
         if self.tab_count() == 0 {
             self.tabs.push(TabData::new(new_pane_group));
@@ -13457,9 +13631,7 @@ impl Workspace {
             )
         });
 
-        ctx.subscribe_to_view(&new_pane_group, move |me, pane_group, event, ctx| {
-            me.handle_file_tree_event(pane_group, event, ctx)
-        });
+        self.subscribe_to_pane_group(&new_pane_group, ctx);
 
         self.tabs.push(TabData::new(new_pane_group.clone()));
         let new_tab_index = self.tab_count() - 1;
@@ -16251,6 +16423,58 @@ impl Workspace {
             pane_group::Event::TerminalViewStateChanged => {
                 self.update_active_session(ctx);
                 ctx.notify();
+            }
+            pane_group::Event::TerminalSidebarMetadataChanged { pane_id, metadata } => {
+                if !ChannelState::is_terminal_only() {
+                    return;
+                }
+                if !self.terminal_sidebar_event_is_current(&pane_group, *pane_id, ctx) {
+                    return;
+                }
+
+                let snapshot =
+                    TerminalSidebarSnapshot::new(pane_group.id(), *pane_id, metadata.clone());
+                let changed = self.upsert_terminal_sidebar_snapshot(snapshot);
+                let pane_visible = pane_group.read(ctx, |pane_group, _| {
+                    pane_group.is_terminal_sidebar_pane_visible(*pane_id)
+                });
+                if Self::terminal_sidebar_should_notify(
+                    changed,
+                    ChannelState::is_terminal_only(),
+                    FeatureFlag::VerticalTabs.is_enabled(),
+                    *TabSettings::as_ref(ctx).use_vertical_tabs,
+                    self.vertical_tabs_panel_open,
+                    pane_visible,
+                ) {
+                    ctx.notify();
+                }
+            }
+            pane_group::Event::TerminalSidebarMetadataRemoved {
+                pane_id,
+                was_visible,
+            } => {
+                if !ChannelState::is_terminal_only() {
+                    return;
+                }
+                if !self
+                    .tabs
+                    .iter()
+                    .any(|tab| tab.pane_group.id() == pane_group.id())
+                {
+                    return;
+                }
+
+                let changed = self.remove_terminal_sidebar_snapshot(pane_group.id(), *pane_id);
+                if Self::terminal_sidebar_should_notify(
+                    changed,
+                    ChannelState::is_terminal_only(),
+                    FeatureFlag::VerticalTabs.is_enabled(),
+                    *TabSettings::as_ref(ctx).use_vertical_tabs,
+                    self.vertical_tabs_panel_open,
+                    *was_visible,
+                ) {
+                    ctx.notify();
+                }
             }
             pane_group::Event::OnboardingTutorialCompleted => {
                 self.pending_session_config_tab_config_chip = false;
@@ -28027,6 +28251,7 @@ impl Workspace {
         ctx: &mut ViewContext<Self>,
     ) {
         self.set_suppress_detach_panes_on_window_close(true);
+        self.remove_terminal_sidebar_snapshots_for_pane_group(pane_group.id());
         ctx.unsubscribe_to_view(pane_group);
     }
 
@@ -28051,9 +28276,7 @@ impl Workspace {
             draggable_state,
             ..
         } = transferred_tab;
-        ctx.subscribe_to_view(&pane_group, move |me, pane_group, event, ctx| {
-            me.handle_file_tree_event(pane_group, event, ctx)
-        });
+        self.subscribe_to_pane_group(&pane_group, ctx);
 
         let index = insertion_index.min(self.tabs.len());
         // Safety net to ensure the tab lands after all pinned items.
@@ -28305,6 +28528,7 @@ impl Workspace {
             std::mem::replace(&mut placeholder_tab.pane_group, new_pane_group.clone());
         let old_id = placeholder_pane_group.id();
         let new_id = placeholder_tab.pane_group.id();
+        self.remove_terminal_sidebar_snapshots_for_pane_group(old_id);
         if let Some(pos) = self.tab_mru_order.iter().position(|&id| id == old_id) {
             self.tab_mru_order[pos] = new_id;
         }
@@ -28319,9 +28543,7 @@ impl Workspace {
         // `Exited` but `handle_file_tree_event` is never invoked, so the
         // workspace never calls `close_tab` and cmd-W appears to do nothing.
         ctx.unsubscribe_to_view(&placeholder_pane_group);
-        ctx.subscribe_to_view(&new_pane_group, move |me, pane_group, event, ctx| {
-            me.handle_file_tree_event(pane_group, event, ctx)
-        });
+        self.subscribe_to_pane_group(&new_pane_group, ctx);
 
         let working_directories_model = self.working_directories_model.clone();
         placeholder_pane_group.update(ctx, |pg, ctx| {

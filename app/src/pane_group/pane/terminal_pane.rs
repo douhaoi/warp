@@ -39,6 +39,7 @@ use crate::ai::conversation_utils;
 use crate::ai::llms::LLMPreferences;
 use crate::ai::orchestration::{RemoteChildLaunchConfig, prepare_remote_child_launch};
 use crate::app_state::{AmbientAgentPaneSnapshot, LeafContents, TerminalPaneSnapshot};
+use crate::channel::ChannelState;
 use crate::code::buffer_location::LocalOrRemotePath;
 #[cfg(feature = "local_fs")]
 use crate::pane_group::CodeSource;
@@ -253,6 +254,15 @@ impl PaneContent for TerminalPane {
 
         // Attach the initial terminal view in the stack.
         attach_terminal_view(&self.terminal_view(ctx), terminal_pane_id, ctx);
+        if ChannelState::is_terminal_only() {
+            let metadata = self
+                .terminal_view(ctx)
+                .read(ctx, |view, ctx| view.terminal_sidebar_metadata(ctx));
+            ctx.emit(pane_group::Event::TerminalSidebarMetadataChanged {
+                pane_id: terminal_pane_id.into(),
+                metadata,
+            });
+        }
 
         // Subscribe to the pane stack to handle views being pushed/popped.
         let pane_stack = self.view.as_ref(ctx).pane_stack().clone();
@@ -861,12 +871,36 @@ fn attach_terminal_view(
     terminal_pane_id: TerminalPaneId,
     ctx: &mut ViewContext<PaneGroup>,
 ) {
+    let terminal_view_id = terminal_view.id();
     ctx.subscribe_to_view(
         terminal_view,
         move |group: &mut PaneGroup, _, event, ctx| {
-            handle_terminal_view_event(group, terminal_pane_id, event, ctx);
+            handle_terminal_view_event(group, terminal_pane_id, terminal_view_id, event, ctx);
         },
     );
+}
+
+fn emit_active_terminal_sidebar_metadata(
+    group: &mut PaneGroup,
+    terminal_pane_id: TerminalPaneId,
+    ctx: &mut ViewContext<PaneGroup>,
+) {
+    if !ChannelState::is_terminal_only() {
+        return;
+    }
+
+    let Some(terminal_view) = group.terminal_view_from_pane_id(terminal_pane_id, ctx) else {
+        return;
+    };
+    let metadata = terminal_view.read(ctx, |view, ctx| view.terminal_sidebar_metadata(ctx));
+    group.forward_terminal_sidebar_metadata(terminal_pane_id.into(), metadata, ctx);
+}
+
+fn terminal_sidebar_event_is_for_active_view(
+    active_terminal_view_id: Option<EntityId>,
+    event_terminal_view_id: EntityId,
+) -> bool {
+    active_terminal_view_id == Some(event_terminal_view_id)
 }
 
 /// Handles events from the pane stack when views are added or removed.
@@ -890,11 +924,13 @@ fn handle_pane_stack_event(
     if let Some(active_terminal) = group.terminal_view_from_pane_id(terminal_pane_id, ctx) {
         active_terminal.update(ctx, |view, ctx| view.on_pane_state_change(ctx));
     }
+    emit_active_terminal_sidebar_metadata(group, terminal_pane_id, ctx);
 }
 
 fn handle_terminal_view_event(
     group: &mut PaneGroup,
     terminal_pane_id: TerminalPaneId,
+    terminal_view_id: EntityId,
     event: &Event,
     ctx: &mut ViewContext<PaneGroup>,
 ) {
@@ -1035,6 +1071,17 @@ fn handle_terminal_view_event(
             }
             Event::TerminalViewStateChanged => {
                 ctx.emit(pane_group::Event::TerminalViewStateChanged);
+            }
+            Event::TerminalSidebarMetadataChanged(metadata) => {
+                let active_terminal_view_id = group
+                    .terminal_view_from_pane_id(terminal_pane_id, ctx)
+                    .map(|active_view| active_view.id());
+                if terminal_sidebar_event_is_for_active_view(
+                    active_terminal_view_id,
+                    terminal_view_id,
+                ) {
+                    group.forward_terminal_sidebar_metadata(pane_id, metadata.clone(), ctx);
+                }
             }
             Event::OnboardingTutorialCompleted => {
                 ctx.emit(pane_group::Event::OnboardingTutorialCompleted);

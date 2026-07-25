@@ -4774,3 +4774,186 @@ fn test_tools_panel_warp_drive_toggle_updates_available_views() {
         });
     });
 }
+
+#[test]
+fn terminal_sidebar_snapshot_upsert_deduplicates_identical_metadata() {
+    let pane_id = PaneId::dummy_pane_id();
+    let snapshot = TerminalSidebarSnapshot::new(
+        EntityId::new(),
+        pane_id,
+        TerminalSidebarMetadata {
+            cwd: None,
+            repo_root: None,
+            branch: Some("main".to_string()),
+            is_running: true,
+            has_observed_command_lifecycle: true,
+        },
+    );
+    let mut snapshots = HashMap::new();
+
+    assert!(TerminalSidebarSnapshot::upsert(
+        &mut snapshots,
+        snapshot.clone()
+    ));
+    assert!(!TerminalSidebarSnapshot::upsert(&mut snapshots, snapshot));
+    assert_eq!(snapshots.len(), 1);
+}
+
+#[test]
+fn terminal_sidebar_snapshot_replaces_lifecycle_state_and_removes_pane() {
+    let pane_id = PaneId::dummy_pane_id();
+    let pane_group_id = EntityId::new();
+    let mut snapshots = HashMap::new();
+    let idle = TerminalSidebarSnapshot::new(
+        pane_group_id,
+        pane_id,
+        TerminalSidebarMetadata {
+            cwd: None,
+            repo_root: None,
+            branch: Some("main".to_string()),
+            is_running: false,
+            has_observed_command_lifecycle: false,
+        },
+    );
+    let running = TerminalSidebarSnapshot::new(
+        pane_group_id,
+        pane_id,
+        TerminalSidebarMetadata {
+            cwd: None,
+            repo_root: None,
+            branch: Some("main".to_string()),
+            is_running: true,
+            has_observed_command_lifecycle: true,
+        },
+    );
+
+    assert!(TerminalSidebarSnapshot::upsert(&mut snapshots, idle));
+    assert!(TerminalSidebarSnapshot::upsert(&mut snapshots, running));
+    assert!(snapshots.get(&pane_id).unwrap().is_running);
+    assert!(
+        snapshots
+            .get(&pane_id)
+            .unwrap()
+            .has_observed_command_lifecycle
+    );
+    assert!(TerminalSidebarSnapshot::remove(&mut snapshots, pane_id));
+    assert!(!TerminalSidebarSnapshot::remove(&mut snapshots, pane_id));
+}
+
+#[test]
+fn terminal_sidebar_snapshot_removal_requires_the_emitting_pane_group_to_own_it() {
+    let original_group_id = EntityId::new();
+    let destination_group_id = EntityId::new();
+    let pane_id = PaneId::dummy_pane_id();
+    let mut snapshots = HashMap::new();
+
+    assert!(TerminalSidebarSnapshot::upsert(
+        &mut snapshots,
+        terminal_sidebar_snapshot(original_group_id, pane_id),
+    ));
+    assert!(TerminalSidebarSnapshot::upsert(
+        &mut snapshots,
+        terminal_sidebar_snapshot(destination_group_id, pane_id),
+    ));
+    assert!(!TerminalSidebarSnapshot::remove_for_pane_group(
+        &mut snapshots,
+        original_group_id,
+        pane_id,
+    ));
+    assert!(TerminalSidebarSnapshot::remove_for_pane_group(
+        &mut snapshots,
+        destination_group_id,
+        pane_id,
+    ));
+}
+
+fn terminal_sidebar_snapshot(pane_group_id: EntityId, pane_id: PaneId) -> TerminalSidebarSnapshot {
+    TerminalSidebarSnapshot::new(
+        pane_group_id,
+        pane_id,
+        TerminalSidebarMetadata {
+            cwd: None,
+            repo_root: None,
+            branch: Some("main".to_owned()),
+            is_running: false,
+            has_observed_command_lifecycle: false,
+        },
+    )
+}
+
+#[test]
+fn terminal_sidebar_snapshot_reconcile_replaces_stale_group_members_and_preserves_other_groups() {
+    let target_group_id = EntityId::new();
+    let other_group_id = EntityId::new();
+    let stale_pane_id = PaneId::dummy_pane_id();
+    let retained_pane_id = PaneId::dummy_pane_id();
+    let other_pane_id = PaneId::dummy_pane_id();
+    let mut snapshots = HashMap::from([
+        (
+            stale_pane_id,
+            terminal_sidebar_snapshot(target_group_id, stale_pane_id),
+        ),
+        (
+            other_pane_id,
+            terminal_sidebar_snapshot(other_group_id, other_pane_id),
+        ),
+    ]);
+
+    assert!(TerminalSidebarSnapshot::reconcile_group(
+        &mut snapshots,
+        target_group_id,
+        [terminal_sidebar_snapshot(target_group_id, retained_pane_id)],
+    ));
+    assert!(!snapshots.contains_key(&stale_pane_id));
+    assert!(snapshots.contains_key(&retained_pane_id));
+    assert!(snapshots.contains_key(&other_pane_id));
+}
+
+#[test]
+fn terminal_sidebar_snapshot_reconcile_is_a_noop_for_identical_group_members() {
+    let pane_group_id = EntityId::new();
+    let pane_id = PaneId::dummy_pane_id();
+    let snapshot = terminal_sidebar_snapshot(pane_group_id, pane_id);
+    let mut snapshots = HashMap::from([(pane_id, snapshot.clone())]);
+
+    assert!(!TerminalSidebarSnapshot::reconcile_group(
+        &mut snapshots,
+        pane_group_id,
+        [snapshot],
+    ));
+}
+
+#[test]
+fn terminal_sidebar_snapshot_reconcile_empty_group_clears_target_members() {
+    let pane_group_id = EntityId::new();
+    let pane_id = PaneId::dummy_pane_id();
+    let mut snapshots =
+        HashMap::from([(pane_id, terminal_sidebar_snapshot(pane_group_id, pane_id))]);
+
+    assert!(TerminalSidebarSnapshot::reconcile_group(
+        &mut snapshots,
+        pane_group_id,
+        [],
+    ));
+    assert!(snapshots.is_empty());
+}
+
+#[test]
+fn terminal_sidebar_notification_requires_visible_open_vertical_tabs() {
+    assert!(Workspace::terminal_sidebar_should_notify(
+        true, true, true, true, true, true
+    ));
+
+    for inputs in [
+        (false, true, true, true, true, true),
+        (true, false, true, true, true, true),
+        (true, true, false, true, true, true),
+        (true, true, true, false, true, true),
+        (true, true, true, true, false, true),
+        (true, true, true, true, true, false),
+    ] {
+        assert!(!Workspace::terminal_sidebar_should_notify(
+            inputs.0, inputs.1, inputs.2, inputs.3, inputs.4, inputs.5,
+        ));
+    }
+}
