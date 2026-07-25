@@ -22,7 +22,7 @@ use warpui::{AppContext, SingletonEntity};
 use crate::ai::persisted_workspace::PersistedWorkspace;
 use crate::auth;
 use crate::auth::AuthStateProvider;
-use crate::channel::ChannelState;
+use crate::channel::{ChannelState, ProductProfile};
 use crate::default_terminal::DefaultTerminal;
 use crate::features::{FeatureFlag, runtime_flags_menu_items};
 use crate::root_view::OpenLaunchConfigArg;
@@ -63,20 +63,113 @@ const EXPORT_DEFAULT_SETTINGS_CSV_MENU_ITEM_NAME: &str =
 const SETTINGS_CSV_FILE_NAME: &str = "warp_default_settings.csv";
 const MAX_RECENT_REPOS_IN_MENU: usize = 10;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProfiledMenu {
+    File,
+    View,
+    Blocks,
+    Ai,
+    Drive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ProfiledMenuAction {
+    Custom(CustomAction),
+    OpenRecent,
+}
+
+fn menu_is_supported_for_profile(menu: ProfiledMenu, profile: ProductProfile) -> bool {
+    match (menu, profile) {
+        (_, ProductProfile::Full)
+        | (
+            ProfiledMenu::File | ProfiledMenu::View | ProfiledMenu::Blocks,
+            ProductProfile::TerminalOnly,
+        ) => true,
+        (ProfiledMenu::Ai | ProfiledMenu::Drive, ProductProfile::TerminalOnly) => false,
+    }
+}
+
+fn menu_action_is_supported_for_profile(
+    menu: ProfiledMenu,
+    action: ProfiledMenuAction,
+    profile: ProductProfile,
+) -> bool {
+    if profile == ProductProfile::Full {
+        return true;
+    }
+
+    !matches!(
+        (menu, action),
+        (
+            ProfiledMenu::File,
+            ProfiledMenuAction::Custom(
+                CustomAction::NewAgentTab | CustomAction::NewFile | CustomAction::OpenRepository,
+            ) | ProfiledMenuAction::OpenRecent,
+        ) | (
+            ProfiledMenu::View,
+            ProfiledMenuAction::Custom(
+                CustomAction::ToggleWarpDrive
+                    | CustomAction::FilesPalette
+                    | CustomAction::ToggleProjectExplorer
+                    | CustomAction::ToggleConversationListView
+                    | CustomAction::ToggleGlobalSearch
+                    | CustomAction::Workflows,
+            ),
+        ) | (
+            ProfiledMenu::Blocks,
+            ProfiledMenuAction::Custom(
+                CustomAction::CreateBlockPermalink
+                    | CustomAction::ViewSharedBlocks
+                    | CustomAction::ToggleBookmarkBlock,
+            ),
+        )
+    )
+}
+
+fn supported_profiled_actions(
+    menu: ProfiledMenu,
+    profile: ProductProfile,
+    actions: &[CustomAction],
+) -> impl Iterator<Item = CustomAction> + '_ {
+    actions.iter().copied().filter(move |action| {
+        menu_action_is_supported_for_profile(menu, ProfiledMenuAction::Custom(*action), profile)
+    })
+}
+
+fn append_updateable_profiled_actions(
+    items: &mut Vec<MenuItem>,
+    menu: ProfiledMenu,
+    profile: ProductProfile,
+    actions: &[CustomAction],
+    ctx: &AppContext,
+) {
+    items.extend(
+        supported_profiled_actions(menu, profile, actions)
+            .map(|action| updateable_custom_item_without_checkmark(action, ctx)),
+    );
+}
+
 /// Creates the root app menu bar
 pub fn menu_bar(ctx: &mut AppContext) -> MenuBar {
-    MenuBar::new(vec![
+    let profile = ChannelState::product_profile();
+    let mut menus = vec![
         make_new_app_menu(ctx),
         make_new_file_menu(ctx),
         make_new_edit_menu(ctx),
         make_new_view_menu(ctx),
         make_new_tab_menu(ctx),
         make_new_blocks_menu(ctx),
-        make_new_ai_menu(ctx),
-        make_new_drive_menu(ctx),
-        make_new_window_menu(),
-        make_new_help_menu(),
-    ])
+    ];
+
+    if menu_is_supported_for_profile(ProfiledMenu::Ai, profile) {
+        menus.push(make_new_ai_menu(ctx));
+    }
+    if menu_is_supported_for_profile(ProfiledMenu::Drive, profile) {
+        menus.push(make_new_drive_menu(ctx));
+    }
+    menus.extend([make_new_window_menu(), make_new_help_menu()]);
+
+    MenuBar::new(menus)
 }
 
 // Creates the app dock menu
@@ -253,11 +346,23 @@ fn make_new_app_menu(ctx: &AppContext) -> Menu {
 }
 
 fn make_new_file_menu(ctx: &AppContext) -> Menu {
-    let mut file_menu_options = make_new_elements_menu_items(ctx);
-    file_menu_options.extend([
-        MenuItem::Separator,
-        updateable_custom_item_without_checkmark(CustomAction::OpenRepository, ctx),
-        MenuItem::Custom(CustomMenuItem::new_with_submenu(
+    let profile = ChannelState::product_profile();
+    let mut file_menu_options = make_new_elements_menu_items(ctx, profile);
+    let mut repository_items = vec![];
+
+    append_updateable_profiled_actions(
+        &mut repository_items,
+        ProfiledMenu::File,
+        profile,
+        &[CustomAction::OpenRepository],
+        ctx,
+    );
+    if menu_action_is_supported_for_profile(
+        ProfiledMenu::File,
+        ProfiledMenuAction::OpenRecent,
+        profile,
+    ) {
+        repository_items.push(MenuItem::Custom(CustomMenuItem::new_with_submenu(
             "Open Recent",
             |_| (),
             |_props, ctx| {
@@ -270,7 +375,14 @@ fn make_new_file_menu(ctx: &AppContext) -> Menu {
             },
             None,
             vec![],
-        )),
+        )));
+    }
+
+    if !repository_items.is_empty() {
+        file_menu_options.push(MenuItem::Separator);
+        file_menu_options.extend(repository_items);
+    }
+    file_menu_options.extend([
         MenuItem::Separator,
         updateable_custom_item_without_checkmark(CustomAction::CloseCurrentSession, ctx),
         updateable_custom_item_without_checkmark(CustomAction::CloseWindow, ctx),
@@ -378,20 +490,46 @@ fn make_new_edit_menu(ctx: &AppContext) -> Menu {
 }
 
 fn make_new_view_menu(ctx: &AppContext) -> Menu {
-    let mut items = vec![
-        updateable_custom_item_without_checkmark(CustomAction::ToggleWarpDrive, ctx),
-        MenuItem::Separator,
-        updateable_custom_item_without_checkmark(CustomAction::CommandPalette, ctx),
-        updateable_custom_item_without_checkmark(CustomAction::NavigationPalette, ctx),
-        updateable_custom_item_without_checkmark(CustomAction::LaunchConfigPalette, ctx),
-        updateable_custom_item_without_checkmark(CustomAction::FilesPalette, ctx),
-        updateable_custom_item_without_checkmark(CustomAction::ToggleProjectExplorer, ctx),
-        updateable_custom_item_without_checkmark(CustomAction::ToggleConversationListView, ctx),
-        updateable_custom_item_without_checkmark(CustomAction::ToggleGlobalSearch, ctx),
-        MenuItem::Separator,
-        updateable_custom_item_without_checkmark(CustomAction::History, ctx),
-        updateable_custom_item_without_checkmark(CustomAction::CommandSearch, ctx),
-        updateable_custom_item_without_checkmark(CustomAction::Workflows, ctx),
+    let profile = ChannelState::product_profile();
+    let mut items = vec![];
+    append_updateable_profiled_actions(
+        &mut items,
+        ProfiledMenu::View,
+        profile,
+        &[CustomAction::ToggleWarpDrive],
+        ctx,
+    );
+    if !items.is_empty() {
+        items.push(MenuItem::Separator);
+    }
+    append_updateable_profiled_actions(
+        &mut items,
+        ProfiledMenu::View,
+        profile,
+        &[
+            CustomAction::CommandPalette,
+            CustomAction::NavigationPalette,
+            CustomAction::LaunchConfigPalette,
+            CustomAction::FilesPalette,
+            CustomAction::ToggleProjectExplorer,
+            CustomAction::ToggleConversationListView,
+            CustomAction::ToggleGlobalSearch,
+        ],
+        ctx,
+    );
+    items.push(MenuItem::Separator);
+    append_updateable_profiled_actions(
+        &mut items,
+        ProfiledMenu::View,
+        profile,
+        &[
+            CustomAction::History,
+            CustomAction::CommandSearch,
+            CustomAction::Workflows,
+        ],
+        ctx,
+    );
+    items.extend([
         MenuItem::Separator,
         MenuItem::Custom(CustomMenuItem::new(
             "Toggle Mouse Reporting",
@@ -439,7 +577,7 @@ fn make_new_view_menu(ctx: &AppContext) -> Menu {
             },
             None,
         )),
-    ];
+    ]);
 
     let is_compact_mode = matches!(
         TerminalSettings::handle(ctx)
@@ -552,6 +690,7 @@ fn make_new_ai_menu(ctx: &AppContext) -> Menu {
 }
 
 fn make_new_blocks_menu(ctx: &AppContext) -> Menu {
+    let profile = ChannelState::product_profile();
     let mut items = vec![
         updateable_custom_item_without_checkmark(CustomAction::ClearBlocks, ctx),
         MenuItem::Separator,
@@ -569,10 +708,31 @@ fn make_new_blocks_menu(ctx: &AppContext) -> Menu {
         ctx,
     ));
     items.push(MenuItem::Separator);
+    let mut cloud_items = vec![];
+    append_updateable_profiled_actions(
+        &mut cloud_items,
+        ProfiledMenu::Blocks,
+        profile,
+        &[
+            CustomAction::CreateBlockPermalink,
+            CustomAction::ToggleBookmarkBlock,
+        ],
+        ctx,
+    );
+    if menu_action_is_supported_for_profile(
+        ProfiledMenu::Blocks,
+        ProfiledMenuAction::Custom(CustomAction::ViewSharedBlocks),
+        profile,
+    ) {
+        cloud_items.insert(
+            1,
+            non_updateable_custom_item(CustomAction::ViewSharedBlocks, ctx),
+        );
+    }
+    if !cloud_items.is_empty() {
+        items.extend(cloud_items);
+    }
     items.extend([
-        updateable_custom_item_without_checkmark(CustomAction::CreateBlockPermalink, ctx),
-        non_updateable_custom_item(CustomAction::ViewSharedBlocks, ctx),
-        updateable_custom_item_without_checkmark(CustomAction::ToggleBookmarkBlock, ctx),
         updateable_custom_item_without_checkmark(CustomAction::FindWithinBlock, ctx),
         MenuItem::Separator,
         updateable_custom_item_without_checkmark(CustomAction::CopyBlock, ctx),
@@ -979,7 +1139,7 @@ fn make_launch_config_menu_items(ctx: &mut AppContext) -> Vec<MenuItem> {
     launch_config_menu_items
 }
 
-fn make_new_elements_menu_items(ctx: &AppContext) -> Vec<MenuItem> {
+fn make_new_elements_menu_items(ctx: &AppContext, profile: ProductProfile) -> Vec<MenuItem> {
     // Dynamically assign the workspace:new_tab keystroke (cmd-t) to whichever item
     // matches the user's "Default mode for new sessions" setting. The non-default item
     // shows its dedicated keystroke instead.
@@ -1015,7 +1175,14 @@ fn make_new_elements_menu_items(ctx: &AppContext) -> Vec<MenuItem> {
             },
             Some(Keystroke::parse("cmd-t").expect("Valid keystroke")),
         )),
-        MenuItem::Custom(CustomMenuItem::new(
+    ];
+
+    if menu_action_is_supported_for_profile(
+        ProfiledMenu::File,
+        ProfiledMenuAction::Custom(CustomAction::NewAgentTab),
+        profile,
+    ) {
+        new_elements_menu.push(MenuItem::Custom(CustomMenuItem::new(
             "New Agent Tab",
             open_new_agent_tab_or_window,
             move |_props: &MenuItemProperties, ctx: &mut AppContext| {
@@ -1045,9 +1212,15 @@ fn make_new_elements_menu_items(ctx: &AppContext) -> Vec<MenuItem> {
                 changes
             },
             None,
-        )),
-        non_updateable_custom_item(CustomAction::NewFile, ctx),
-    ];
+        )));
+    }
+    if menu_action_is_supported_for_profile(
+        ProfiledMenu::File,
+        ProfiledMenuAction::Custom(CustomAction::NewFile),
+        profile,
+    ) {
+        new_elements_menu.push(non_updateable_custom_item(CustomAction::NewFile, ctx));
+    }
 
     let reopen_session_action_updater =
         custom_action_updater(CustomAction::ReopenClosedSession, Box::new(|_| false));
@@ -1193,3 +1366,7 @@ fn custom_action_updater(
         changes
     }
 }
+
+#[cfg(test)]
+#[path = "app_menus_tests.rs"]
+mod tests;
