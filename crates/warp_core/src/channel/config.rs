@@ -11,6 +11,33 @@ pub enum ProductProfile {
     TerminalOnly,
 }
 
+impl ProductProfile {
+    /// Whether this product can authenticate with a Warp account.
+    pub const fn supports_authentication(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Whether this product can expose or run Warp cloud-backed features.
+    pub const fn supports_cloud_features(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Whether this product can expose or run Warp AI features.
+    pub const fn supports_ai_features(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Whether this product can send product telemetry to Warp services.
+    pub const fn supports_telemetry(self) -> bool {
+        matches!(self, Self::Full)
+    }
+
+    /// Whether this product can automatically restore MCP server runtimes.
+    pub const fn supports_mcp_server_autostart(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct ChannelConfig {
     /// The application ID for this channel.

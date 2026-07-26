@@ -223,12 +223,16 @@ impl PrivacyPageView {
             Box::new(SecretRedactionWidget::default()),
             Box::new(AppAnalyticsWidget::default()),
             Box::new(CrashReportsWidget::default()),
-            Box::new(CloudConversationStorageWidget::default()),
         ];
+        if !ChannelState::is_terminal_only() {
+            widgets.push(Box::new(CloudConversationStorageWidget::default()));
+        }
         if ContextFlag::NetworkLogConsole.is_enabled() {
             widgets.push(Box::new(NetworkLogWidget::default()));
         }
-        widgets.push(Box::new(DataManagementWidget::default()));
+        if !ChannelState::is_terminal_only() {
+            widgets.push(Box::new(DataManagementWidget::default()));
+        }
         widgets.push(Box::new(PrivacyPolicyWidget::default()));
         PageType::new_uncategorized(widgets, Some("Privacy"))
     }
@@ -516,6 +520,16 @@ impl TypedActionView for PrivacyPageView {
     type Action = PrivacyPageAction;
 
     fn handle_action(&mut self, action: &PrivacyPageAction, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only()
+            && matches!(
+                action,
+                PrivacyPageAction::ToggleCloudConversationStorage
+                    | PrivacyPageAction::OpenDataManagementWebpage
+            )
+        {
+            return;
+        }
+
         match action {
             PrivacyPageAction::AddRecommendedRegex(idx) => {
                 // First process any pending removals

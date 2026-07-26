@@ -23,6 +23,17 @@ jobs:
     timeout-minutes: 240
 
     steps:
+      # The hosted image currently includes an aws/tap entry that Homebrew
+      # considers untrusted. Remove it before any dependency installation so
+      # this self-use build has a deterministic, warning-free runner state.
+      - name: Normalize macOS runner state
+        shell: bash
+        run: |
+          git config --global init.defaultBranch main
+          if brew tap | grep --fixed-strings --line-regexp --quiet 'aws/tap'; then
+            brew untap aws/tap
+          fi
+
       - name: Checkout sources
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
 

@@ -356,7 +356,9 @@ use crate::settings_view::handoff_environment_creation_modal::{
 use crate::settings_view::keybindings::{KeybindingChangedEvent, KeybindingChangedNotifier};
 use crate::settings_view::mcp_servers_page::MCPServersSettingsPage;
 use crate::settings_view::pane_manager::SettingsPaneManager;
-use crate::settings_view::{SettingsSection, SettingsView, SettingsViewEvent, flags};
+use crate::settings_view::{
+    SettingsAction, SettingsSection, SettingsView, SettingsViewEvent, flags,
+};
 #[cfg(all(target_os = "windows", feature = "local_tty"))]
 use crate::shell_indicator::ShellIndicatorType;
 use crate::tab::{
@@ -370,6 +372,7 @@ use crate::tab_configs::remove_confirmation_dialog::{
     RemoveTabConfigConfirmationDialog, RemoveTabConfigConfirmationEvent,
 };
 use crate::tab_configs::session_config_modal::{SessionConfigModal, SessionConfigModalEvent};
+use crate::tab_configs::tab_config::TabConfigPaneType;
 use crate::tab_configs::telemetry::{
     ExistingTabConfigOpenMode, GuidedModalSessionType, TabConfigsTelemetryEvent,
 };
@@ -1005,31 +1008,219 @@ fn workspace_action_is_supported_for_profile(
     product_profile: ProductProfile,
     is_resource_center_open: bool,
 ) -> bool {
+    if product_profile == ProductProfile::Full {
+        return true;
+    }
+
     match action {
         WorkspaceAction::ToggleResourceCenter => {
             resource_center_toggle_is_allowed_for_profile(product_profile, is_resource_center_open)
         }
-        WorkspaceAction::ViewLatestChangelog => {
-            resource_center_main_page_is_supported_for_profile(product_profile)
+        WorkspaceAction::ShowSettingsPage(section)
+        | WorkspaceAction::ScrollToSettingsWidget { page: section, .. } => {
+            section.is_allowed(product_profile)
         }
-        _ => true,
+        WorkspaceAction::ShowSettingsPageWithSearch { section, .. } => section
+            .as_ref()
+            .is_none_or(|section| section.is_allowed(product_profile)),
+        WorkspaceAction::DispatchToSettingsTab(action) => match action {
+            SettingsAction::SelectAndRefresh(section) => section.is_allowed(product_profile),
+            SettingsAction::ToggleUmbrella(_)
+            | SettingsAction::AppearancePageToggle(_)
+            | SettingsAction::FeaturesPageToggle(_)
+            | SettingsAction::PrivacyPageToggle(_)
+            | SettingsAction::Tab
+            | SettingsAction::Split(_)
+            | SettingsAction::ToggleMaximizePane
+            | SettingsAction::Close
+            | SettingsAction::OpenContextMenu(_)
+            | SettingsAction::FocusSelf
+            | SettingsAction::Up
+            | SettingsAction::Down => true,
+            SettingsAction::MainPageToggle(_)
+            | SettingsAction::AI(_)
+            | SettingsAction::Code(_)
+            | SettingsAction::WarpDrive(_)
+            | SettingsAction::WarpifyPageToggle(_)
+            | SettingsAction::Debug(_) => false,
+        },
+        WorkspaceAction::SelectTabConfig(config) => config
+            .panes
+            .iter()
+            .all(|pane| matches!(pane.pane_type, None | Some(TabConfigPaneType::Terminal))),
+        WorkspaceAction::OpenPalette { mode, .. } | WorkspaceAction::TogglePalette { mode, .. } => {
+            is_palette_mode_supported_for_profile(*mode, product_profile)
+        }
+        WorkspaceAction::ActivateTab(_)
+        | WorkspaceAction::ActivatePrevTab
+        | WorkspaceAction::ActivateNextTab
+        | WorkspaceAction::ActivateLastTab
+        | WorkspaceAction::ActivateTabByNumber(_)
+        | WorkspaceAction::CyclePrevSession
+        | WorkspaceAction::CycleNextSession
+        | WorkspaceAction::MoveActiveTabLeft
+        | WorkspaceAction::MoveActiveTabRight
+        | WorkspaceAction::MoveTabLeft(_)
+        | WorkspaceAction::MoveTabRight(_)
+        | WorkspaceAction::RenameTab(_)
+        | WorkspaceAction::ResetTabName(_)
+        | WorkspaceAction::RenamePane(_)
+        | WorkspaceAction::ResetPaneName(_)
+        | WorkspaceAction::RenameActiveTab
+        | WorkspaceAction::RenameActivePane
+        | WorkspaceAction::SetActiveTabName(_)
+        | WorkspaceAction::SetActiveTabColor(_)
+        | WorkspaceAction::ToggleTabRightClickMenu { .. }
+        | WorkspaceAction::ToggleTabSelectionRightClickMenu { .. }
+        | WorkspaceAction::ToggleVerticalTabsPaneContextMenu { .. }
+        | WorkspaceAction::TabHoverWidthStart { .. }
+        | WorkspaceAction::TabHoverWidthEnd
+        | WorkspaceAction::ToggleTabBarOverflowMenu
+        | WorkspaceAction::CloseTab(_)
+        | WorkspaceAction::CloseActiveTab
+        | WorkspaceAction::CloseOtherTabs(_)
+        | WorkspaceAction::CloseNonActiveTabs
+        | WorkspaceAction::CloseTabsRight(_)
+        | WorkspaceAction::CloseTabsRightActiveTab
+        | WorkspaceAction::CloseTabGroup(_)
+        | WorkspaceAction::ToggleTabGroupCollapsed(_)
+        | WorkspaceAction::RenameTabGroup(_)
+        | WorkspaceAction::CancelActiveRename
+        | WorkspaceAction::NewTabGroupFromTab(_)
+        | WorkspaceAction::MoveTabToGroup { .. }
+        | WorkspaceAction::RemoveTabFromGroup(_)
+        | WorkspaceAction::ShiftSelectTabRange { .. }
+        | WorkspaceAction::ToggleTabMultiSelection { .. }
+        | WorkspaceAction::ClearTabMultiSelection
+        | WorkspaceAction::NewTabGroupFromSelectedTabs
+        | WorkspaceAction::NewTabGroupFromActiveOrSelectedTabs
+        | WorkspaceAction::MoveSelectedTabsToGroup { .. }
+        | WorkspaceAction::RemoveSelectedTabsFromGroup
+        | WorkspaceAction::RemoveActiveOrSelectedTabsFromGroup
+        | WorkspaceAction::ToggleTabGroupRightClickMenu { .. }
+        | WorkspaceAction::UngroupTabs(_)
+        | WorkspaceAction::NewTabInGroup(_)
+        | WorkspaceAction::MoveTabGroupUp(_)
+        | WorkspaceAction::MoveTabGroupDown(_)
+        | WorkspaceAction::CloseTabsOutsideGroup(_)
+        | WorkspaceAction::CloseTabsAboveGroup(_)
+        | WorkspaceAction::CloseTabsBelowGroup(_)
+        | WorkspaceAction::PinTab(_)
+        | WorkspaceAction::UnpinTab(_)
+        | WorkspaceAction::PinActiveTab
+        | WorkspaceAction::UnpinActiveTab
+        | WorkspaceAction::PinTabGroup(_)
+        | WorkspaceAction::UnpinTabGroup(_)
+        | WorkspaceAction::PinActiveTabGroup
+        | WorkspaceAction::UnpinActiveTabGroup
+        | WorkspaceAction::StartTabDrag
+        | WorkspaceAction::DragTab { .. }
+        | WorkspaceAction::DropTab
+        | WorkspaceAction::StartGroupDrag(_)
+        | WorkspaceAction::DragGroup { .. }
+        | WorkspaceAction::DropGroup
+        | WorkspaceAction::AddDefaultTab
+        | WorkspaceAction::AddTerminalTab { .. }
+        | WorkspaceAction::AddTabWithShell { .. }
+        | WorkspaceAction::AddDockerSandboxTab
+        | WorkspaceAction::OpenNewSessionMenu { .. }
+        | WorkspaceAction::ToggleNewSessionMenu { .. }
+        | WorkspaceAction::ToggleTabConfigsMenu
+        | WorkspaceAction::SelectNewSessionMenuItem(_)
+        | WorkspaceAction::OpenLaunchConfigSaveModal
+        | WorkspaceAction::ShowSessionConfigModal
+        | WorkspaceAction::DismissSessionConfigTabConfigChip
+        | WorkspaceAction::SaveCurrentTabAsNewConfig(_)
+        | WorkspaceAction::OpenTabConfigErrorFile { .. }
+        | WorkspaceAction::TabConfigSidecarMakeDefault { .. }
+        | WorkspaceAction::TabConfigSidecarEditConfig { .. }
+        | WorkspaceAction::TabConfigSidecarRemoveConfig { .. }
+        | WorkspaceAction::OpenTabConfigRepoPicker { .. }
+        | WorkspaceAction::OpenNewWorktreeModal
+        | WorkspaceAction::OpenNewWorktreeRepoPicker
+        | WorkspaceAction::OpenWorktreeInRepo { .. }
+        | WorkspaceAction::OpenWorktreeAddRepoPicker
+        | WorkspaceAction::ReopenClosedSession
+        | WorkspaceAction::AddWindow
+        | WorkspaceAction::AddWindowWithShell { .. }
+        | WorkspaceAction::CloseWindow
+        | WorkspaceAction::TerminateApp
+        | WorkspaceAction::ShowSettings
+        | WorkspaceAction::ConfigureKeybindingSettings { .. }
+        | WorkspaceAction::ToggleKeybindingsPage
+        | WorkspaceAction::ShowThemeChooser(_)
+        | WorkspaceAction::ShowThemeChooserForActiveTheme
+        | WorkspaceAction::IncreaseFontSize
+        | WorkspaceAction::DecreaseFontSize
+        | WorkspaceAction::ResetFontSize
+        | WorkspaceAction::IncreaseZoom
+        | WorkspaceAction::DecreaseZoom
+        | WorkspaceAction::ResetZoom
+        | WorkspaceAction::SetA11yVerbosityLevel(_)
+        | WorkspaceAction::ToggleNotifications
+        | WorkspaceAction::ToggleBlockSnackbar
+        | WorkspaceAction::ToggleErrorUnderlining
+        | WorkspaceAction::ToggleSyntaxHighlighting
+        | WorkspaceAction::OpenSettingsFile
+        | WorkspaceAction::ShowCommandSearch(_)
+        | WorkspaceAction::JoinSlack
+        | WorkspaceAction::ViewUserDocs
+        | WorkspaceAction::ViewPrivacyPolicy
+        | WorkspaceAction::SendFeedback
+        | WorkspaceAction::CopyVersion(_)
+        | WorkspaceAction::CopyTextToClipboard(_)
+        | WorkspaceAction::CopyCurrentPath
+        | WorkspaceAction::ToggleTabColor { .. }
+        | WorkspaceAction::ToggleTabGroupColor { .. }
+        | WorkspaceAction::ToggleMouseReporting
+        | WorkspaceAction::ToggleScrollReporting
+        | WorkspaceAction::ToggleFocusReporting
+        | WorkspaceAction::ToggleLeftPanel
+        | WorkspaceAction::ToggleRightPanel
+        | WorkspaceAction::ClosePanel
+        | WorkspaceAction::FocusLeftPanel
+        | WorkspaceAction::FocusRightPanel
+        | WorkspaceAction::ToggleVerticalTabsPanel
+        | WorkspaceAction::OpenVerticalTabsPanel
+        | WorkspaceAction::ToggleVerticalTabsSettingsPopup
+        | WorkspaceAction::SetVerticalTabsDisplayGranularity(_)
+        | WorkspaceAction::SetVerticalTabsTabItemMode(_)
+        | WorkspaceAction::SetVerticalTabsViewMode(_)
+        | WorkspaceAction::SetVerticalTabsPrimaryInfo(_)
+        | WorkspaceAction::SetVerticalTabsCompactSubtitle(_)
+        | WorkspaceAction::ToggleVerticalTabsShowPrLink
+        | WorkspaceAction::ToggleVerticalTabsShowDiffStats
+        | WorkspaceAction::ToggleVerticalTabsShowDetailsOnHover
+        | WorkspaceAction::SyncTrafficLights
+        | WorkspaceAction::ToggleSyncAllTerminalInputsInAllTabs
+        | WorkspaceAction::ToggleSyncTerminalInputsInTab
+        | WorkspaceAction::DisableTerminalInputSync
+        | WorkspaceAction::FocusTerminalViewInWorkspace { .. }
+        | WorkspaceAction::FocusPane(_)
+        | WorkspaceAction::NavigatePrevPaneOrPanel
+        | WorkspaceAction::NavigateNextPaneOrPanel
+        | WorkspaceAction::RunCommand(_)
+        | WorkspaceAction::InsertInInput {
+            ensure_agent_mode: false,
+            ..
+        }
+        | WorkspaceAction::ToggleRecordingMode
+        | WorkspaceAction::ToggleInBandGenerators
+        | WorkspaceAction::ToggleDebugNetworkStatus
+        | WorkspaceAction::ToggleShowMemoryStats
+        | WorkspaceAction::OpenLink(_)
+        | WorkspaceAction::OpenInExplorer { .. }
+        | WorkspaceAction::OpenFilePath { .. }
+        | WorkspaceAction::DismissWorkspaceBanner(_)
+        | WorkspaceAction::ToggleWelcomeTips
+        | WorkspaceAction::ChangeCursor(_)
+        | WorkspaceAction::DumpDebugInfo
+        | WorkspaceAction::CheckForUpdate
+        | WorkspaceAction::ApplyUpdate
+        | WorkspaceAction::DownloadNewVersion
+        | WorkspaceAction::AutoupdateFailureLink => true,
+        _ => false,
     }
-}
-
-fn is_terminal_only_panel_action_disabled(action: &WorkspaceAction) -> bool {
-    matches!(
-        action,
-        WorkspaceAction::ToggleWarpDrive
-            | WorkspaceAction::OpenWarpDrive
-            | WorkspaceAction::OpenCodeReviewPanel(_)
-            | WorkspaceAction::ToggleProjectExplorer
-            | WorkspaceAction::OpenProjectExplorer
-            | WorkspaceAction::ToggleGlobalSearch
-            | WorkspaceAction::OpenGlobalSearch
-            | WorkspaceAction::ToggleConversationListView
-            | WorkspaceAction::OpenConversationListView
-            | WorkspaceAction::ViewObjectInWarpDrive(_)
-    )
 }
 #[cfg(not(target_family = "wasm"))]
 struct ThirdPartyLocalContinuationLaunch {
@@ -9994,7 +10185,7 @@ impl Workspace {
             MenuItem::Separator,
         ]);
 
-        if self.auth_state.is_anonymous_or_logged_out() {
+        if !ChannelState::is_terminal_only() && self.auth_state.is_anonymous_or_logged_out() {
             items.push(
                 MenuItemFields::new("Sign up")
                     .with_on_select_action(WorkspaceAction::SignupAnonymousUser)
@@ -10002,40 +10193,42 @@ impl Workspace {
             );
         }
 
-        // Check if the user is on any paid plan to determine whether to show "Billing and Usage" or "Upgrade"
-        let is_on_paid_plan = UserWorkspaces::as_ref(app)
-            .current_workspace()
-            .map(|workspace| workspace.billing_metadata.is_user_on_paid_plan())
-            .unwrap_or(false);
+        if !ChannelState::is_terminal_only() {
+            // Check if the user is on any paid plan to determine whether to show "Billing and Usage" or "Upgrade"
+            let is_on_paid_plan = UserWorkspaces::as_ref(app)
+                .current_workspace()
+                .map(|workspace| workspace.billing_metadata.is_user_on_paid_plan())
+                .unwrap_or(false);
 
-        if is_on_paid_plan {
+            if is_on_paid_plan {
+                items.push(
+                    MenuItemFields::new("Billing and usage")
+                        .with_on_select_action(WorkspaceAction::ShowSettingsPage(
+                            SettingsSection::BillingAndUsage,
+                        ))
+                        .into_item(),
+                );
+            } else {
+                items.push(
+                    MenuItemFields::new("Upgrade")
+                        .with_on_select_action(WorkspaceAction::ShowUpgrade)
+                        .into_item(),
+                );
+            }
+
             items.push(
-                MenuItemFields::new("Billing and usage")
-                    .with_on_select_action(WorkspaceAction::ShowSettingsPage(
-                        SettingsSection::BillingAndUsage,
-                    ))
+                MenuItemFields::new("Invite a friend")
+                    .with_on_select_action(WorkspaceAction::ShowReferralSettingsPage)
                     .into_item(),
             );
-        } else {
-            items.push(
-                MenuItemFields::new("Upgrade")
-                    .with_on_select_action(WorkspaceAction::ShowUpgrade)
-                    .into_item(),
-            );
-        }
 
-        items.push(
-            MenuItemFields::new("Invite a friend")
-                .with_on_select_action(WorkspaceAction::ShowReferralSettingsPage)
-                .into_item(),
-        );
-
-        if !self.auth_state.is_anonymous_or_logged_out() {
-            items.push(
-                MenuItemFields::new("Log out")
-                    .with_on_select_action(WorkspaceAction::LogOut)
-                    .into_item(),
-            );
+            if !self.auth_state.is_anonymous_or_logged_out() {
+                items.push(
+                    MenuItemFields::new("Log out")
+                        .with_on_select_action(WorkspaceAction::LogOut)
+                        .into_item(),
+                );
+            }
         }
         items
     }
@@ -21660,7 +21853,8 @@ impl Workspace {
             );
         }
 
-        if self.auth_state.is_anonymous_or_logged_out()
+        if !ChannelState::is_terminal_only()
+            && self.auth_state.is_anonymous_or_logged_out()
             && !FeatureFlag::OpenWarpNewSettingsModes.is_enabled()
         {
             if is_web_anonymous_user {
@@ -22579,7 +22773,10 @@ impl Workspace {
     }
 
     fn render_reauth_banner_element(&self) -> Option<WorkspaceBannerFields> {
-        if self.reauth_banner_dismissed || !self.auth_state.needs_reauth() {
+        if ChannelState::is_terminal_only()
+            || self.reauth_banner_dismissed
+            || !self.auth_state.needs_reauth()
+        {
             return None;
         }
 
@@ -23964,6 +24161,10 @@ impl Workspace {
         entrypoint: AnonymousUserSignupEntrypoint,
         ctx: &mut ViewContext<Self>,
     ) {
+        if ChannelState::is_terminal_only() {
+            return;
+        }
+
         if self.auth_state.is_user_anonymous().unwrap_or_default() {
             // User has a Firebase anonymous account — use the linking flow.
             AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {
@@ -24223,10 +24424,6 @@ impl TypedActionView for Workspace {
         use WorkspaceAction::*;
         let window_id = ctx.window_id();
 
-        if ChannelState::is_terminal_only() && is_terminal_only_panel_action_disabled(action) {
-            return;
-        }
-
         if !workspace_action_is_supported_for_profile(
             action,
             ChannelState::product_profile(),
@@ -24388,6 +24585,11 @@ impl TypedActionView for Workspace {
                 }
             }
             AddDefaultTab => {
+                if ChannelState::is_terminal_only() {
+                    self.add_terminal_tab(false, ctx);
+                    return;
+                }
+
                 let effective_mode = AISettings::as_ref(ctx).default_session_mode(ctx);
                 match effective_mode {
                     DefaultSessionMode::TabConfig => {

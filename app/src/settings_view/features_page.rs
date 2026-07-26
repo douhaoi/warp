@@ -813,6 +813,21 @@ pub enum FeaturesPageAction {
     SetCodeEditorLineNumberMode(CodeEditorLineNumberMode),
 }
 
+fn is_terminal_only_features_action_disabled(action: &FeaturesPageAction) -> bool {
+    matches!(
+        action,
+        FeaturesPageAction::ToggleGlobalWorkflowsInUniversalSearch
+            | FeaturesPageAction::ToggleAgentTaskCompletedNotifications
+            | FeaturesPageAction::ToggleAtContextMenuInTerminalMode
+            | FeaturesPageAction::ToggleSlashCommandsInTerminalMode
+            | FeaturesPageAction::ToggleOutlineCodebaseSymbolsForAtContextMenu
+            | FeaturesPageAction::ToggleAutoOpenCodeReviewPane
+            | FeaturesPageAction::ToggleShowTerminalInputMessageLine
+            | FeaturesPageAction::ToggleShowTerminalZeroStateBlock
+            | FeaturesPageAction::ToggleAgentInAppNotifications
+    )
+}
+
 lazy_static! {
     static ref TAB_KEYSTROKE: Keystroke = Keystroke {
         key: "tab".to_string(),
@@ -1445,6 +1460,10 @@ impl TypedActionView for FeaturesPageView {
 
     fn handle_action(&mut self, action: &FeaturesPageAction, ctx: &mut ViewContext<Self>) {
         use FeaturesPageAction::*;
+
+        if ChannelState::is_terminal_only() && is_terminal_only_features_action_disabled(action) {
+            return;
+        }
 
         match action {
             SetCtrlTabBehavior(ctrl_tab_behavior) => {
@@ -2731,6 +2750,7 @@ impl FeaturesPageView {
     }
 
     fn build_page(ctx: &mut ViewContext<Self>) -> PageType<Self> {
+        let is_terminal_only = ChannelState::is_terminal_only();
         let mut general_widgets: Vec<Box<dyn SettingsWidget<View = Self>>> =
             vec![Box::new(DefaultSessionModeWidget::default())];
 
@@ -2804,7 +2824,8 @@ impl FeaturesPageView {
             general_widgets.push(Box::new(MouseScrollMultiplierWidget::default()));
         }
 
-        if FeatureFlag::AutoOpenCodeReviewPane.is_enabled()
+        if !is_terminal_only
+            && FeatureFlag::AutoOpenCodeReviewPane.is_enabled()
             && !FeatureFlag::OpenWarpNewSettingsModes.is_enabled()
         {
             general_widgets.push(Box::new(AutoOpenCodeReviewPaneWidget::default()));
@@ -2952,14 +2973,16 @@ impl FeaturesPageView {
             editor_widgets.push(Box::new(AutosuggestionIgnoreButtonWidget::default()));
         }
 
-        if input_settings
-            .at_context_menu_in_terminal_mode
-            .is_supported_on_current_platform()
+        if !is_terminal_only
+            && input_settings
+                .at_context_menu_in_terminal_mode
+                .is_supported_on_current_platform()
         {
             editor_widgets.push(Box::new(AtContextMenuInTerminalModeWidget::default()));
         }
 
-        if FeatureFlag::AgentView.is_enabled()
+        if !is_terminal_only
+            && FeatureFlag::AgentView.is_enabled()
             && input_settings
                 .enable_slash_commands_in_terminal
                 .is_supported_on_current_platform()
@@ -2967,9 +2990,10 @@ impl FeaturesPageView {
             editor_widgets.push(Box::new(SlashCommandsInTerminalModeWidget::default()));
         }
 
-        if input_settings
-            .outline_codebase_symbols_for_at_context_menu
-            .is_supported_on_current_platform()
+        if !is_terminal_only
+            && input_settings
+                .outline_codebase_symbols_for_at_context_menu
+                .is_supported_on_current_platform()
             && FeatureFlag::AIContextMenuCode.is_enabled()
         {
             editor_widgets.push(Box::new(
@@ -2977,7 +3001,7 @@ impl FeaturesPageView {
             ));
         }
 
-        if FeatureFlag::AgentView.is_enabled() {
+        if !is_terminal_only && FeatureFlag::AgentView.is_enabled() {
             editor_widgets.push(Box::new(ShowTerminalInputMessageLineWidget::default()));
         }
 
@@ -3021,7 +3045,7 @@ impl FeaturesPageView {
             terminal_widgets.push(Box::new(AudibleBellWidget::default()));
         }
 
-        if FeatureFlag::AgentView.is_enabled() {
+        if !is_terminal_only && FeatureFlag::AgentView.is_enabled() {
             terminal_widgets.push(Box::new(ShowTerminalZeroStateBlockWidget::default()));
         }
 
@@ -3070,12 +3094,19 @@ impl FeaturesPageView {
             Category::new("Terminal Input", editor_widgets),
             Category::new("Terminal", terminal_widgets),
             Category::new("Notifications", notifications_widgets),
-            Category::new(
-                "Workflows",
-                vec![Box::new(WorkflowsInCommandSearch::default())],
-            ),
             Category::new("System", system_widgets),
         ];
+
+        let mut categories = categories;
+        if !is_terminal_only {
+            categories.insert(
+                categories.len() - 1,
+                Category::new(
+                    "Workflows",
+                    vec![Box::new(WorkflowsInCommandSearch::default())],
+                ),
+            );
+        }
 
         PageType::new_categorized(categories, None)
     }
@@ -5314,25 +5345,18 @@ impl SettingsWidget for DesktopNotificationsWidget {
             session_settings.notifications.mode,
             NotificationsMode::Enabled
         ) {
-            let toggles = vec![
-                view.render_notification_toggle(
-                    session_settings
-                        .notifications
-                        .is_agent_task_completed_enabled,
-                    "Notify when an agent completes a task",
-                    FeaturesPageAction::ToggleAgentTaskCompletedNotifications,
-                    view.button_mouse_states
-                        .agent_task_completed_notifications_checkbox
-                        .clone(),
-                    appearance,
-                ),
+            let mut toggles = vec![
                 view.render_long_running_notifications_setting(
                     &session_settings.notifications,
                     appearance,
                 ),
                 view.render_notification_toggle(
                     session_settings.notifications.is_needs_attention_enabled,
-                    "Notify when a command or agent needs your attention to continue",
+                    if ChannelState::is_terminal_only() {
+                        "Notify when a command needs your attention to continue"
+                    } else {
+                        "Notify when a command or agent needs your attention to continue"
+                    },
                     FeaturesPageAction::ToggleNeedsAttentionNotifications,
                     view.button_mouse_states
                         .agent_needs_attention_notifications_checkbox
@@ -5352,10 +5376,27 @@ impl SettingsWidget for DesktopNotificationsWidget {
                 },
             ];
 
+            if !ChannelState::is_terminal_only() {
+                toggles.insert(
+                    0,
+                    view.render_notification_toggle(
+                        session_settings
+                            .notifications
+                            .is_agent_task_completed_enabled,
+                        "Notify when an agent completes a task",
+                        FeaturesPageAction::ToggleAgentTaskCompletedNotifications,
+                        view.button_mouse_states
+                            .agent_task_completed_notifications_checkbox
+                            .clone(),
+                        appearance,
+                    ),
+                );
+            }
+
             column.add_child(render_group(toggles, appearance));
         }
 
-        if FeatureFlag::HOANotifications.is_enabled() {
+        if !ChannelState::is_terminal_only() && FeatureFlag::HOANotifications.is_enabled() {
             let ai_settings = AISettings::as_ref(app);
             let show_agent_notifications = *ai_settings.show_agent_notifications;
             column.add_child(render_body_item::<FeaturesPageAction>(

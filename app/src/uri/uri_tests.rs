@@ -1,8 +1,153 @@
 use self::parse_url_paths::{WarpWebLink, get_item_data_from_warp_link};
 use super::*;
 use crate::ChannelState;
+use crate::channel::ProductProfile;
 use crate::launch_configs::launch_config::make_mock_single_window_launch_config;
 use crate::linear::{LinearAction, LinearIssueWork};
+use crate::settings_view::settings_widget_deeplink_target;
+use crate::tab_configs::tab_config::{TabConfigPaneNode, TabConfigPaneType};
+
+#[test]
+fn terminal_only_uri_hosts_fail_closed_for_auth_cloud_and_ai() {
+    let terminal_only = ProductProfile::TerminalOnly;
+
+    for host in [
+        UriHost::Auth,
+        UriHost::Team,
+        UriHost::SharedSession,
+        UriHost::Conversation,
+        UriHost::Drive,
+        UriHost::Mcp,
+        UriHost::Codex,
+        UriHost::Linear,
+    ] {
+        assert!(!host.is_supported_for_profile(terminal_only), "{host:?}");
+    }
+
+    for host in [
+        UriHost::Action,
+        UriHost::Launch,
+        UriHost::Settings,
+        UriHost::TabConfig,
+        UriHost::Session,
+    ] {
+        assert!(host.is_supported_for_profile(terminal_only), "{host:?}");
+    }
+}
+
+#[test]
+fn terminal_only_uri_actions_keep_terminal_workflows_and_reject_ai_workflows() {
+    let terminal_only = ProductProfile::TerminalOnly;
+
+    for action in [
+        Action::NewTab,
+        Action::NewWindow,
+        Action::Docker,
+        Action::OpenRepo,
+    ] {
+        assert!(action.is_supported_for_profile(terminal_only), "{action:?}");
+    }
+
+    for action in [
+        Action::CloudAgentSetup,
+        Action::NewCloudAgentConversation,
+        Action::NewAgentConversation,
+        Action::CreateEnvironment { repos: vec![] },
+        Action::FocusCloudMode,
+        Action::AutoHandoffToCloud {
+            trigger: AutoCloudHandoffTrigger::Uri,
+        },
+    ] {
+        assert!(
+            !action.is_supported_for_profile(terminal_only),
+            "{action:?}"
+        );
+    }
+}
+
+#[test]
+fn terminal_only_settings_uri_allowlist_rejects_cloud_sections_and_widgets() {
+    let terminal_only = ProductProfile::TerminalOnly;
+
+    for uri in [
+        "warp://settings",
+        "warp://settings?q=font",
+        "warp://settings/appearance",
+        "warp://settings/features",
+        "warp://settings/keybindings",
+        "warp://settings/privacy",
+        "warp://settings/about",
+        "warp://settings?widget=global_hotkey",
+    ] {
+        assert!(
+            settings_uri_is_supported_for_profile(&Url::parse(uri).unwrap(), terminal_only),
+            "{uri}"
+        );
+    }
+
+    for uri in [
+        "warp://settings/teams",
+        "warp://settings/environments",
+        "warp://settings/mcp",
+        "warp://settings/billing_and_usage",
+        "warp://settings/platform",
+        "warp://settings/warp_agent",
+        "warp://settings?widget=custom_router",
+        "warp://settings?widget=not_a_widget",
+        "warp://settings/mcp?widget=global_hotkey",
+        "warp://settings/teams?widget=global_hotkey",
+        "warp://settings/environments?widget=global_hotkey",
+    ] {
+        assert!(
+            !settings_uri_is_supported_for_profile(&Url::parse(uri).unwrap(), terminal_only),
+            "{uri}"
+        );
+    }
+}
+
+#[test]
+fn terminal_only_tab_configs_reject_agent_and_cloud_panes() {
+    let mut config = make_mock_tab_config("terminal", Some("/tab_configs/terminal.toml"));
+    config.panes = vec![TabConfigPaneNode {
+        id: "root".to_owned(),
+        pane_type: Some(TabConfigPaneType::Terminal),
+        split: None,
+        children: None,
+        is_focused: Some(true),
+        directory: None,
+        commands: None,
+        shell: None,
+    }];
+    assert!(tab_config_is_supported_for_profile(
+        &config,
+        ProductProfile::TerminalOnly
+    ));
+
+    config.panes.push(TabConfigPaneNode {
+        id: "nested-agent".to_owned(),
+        pane_type: Some(TabConfigPaneType::Agent),
+        split: None,
+        children: None,
+        is_focused: None,
+        directory: None,
+        commands: None,
+        shell: None,
+    });
+    assert!(!tab_config_is_supported_for_profile(
+        &config,
+        ProductProfile::TerminalOnly
+    ));
+
+    config.panes[1].pane_type = Some(TabConfigPaneType::Cloud);
+    assert!(!tab_config_is_supported_for_profile(
+        &config,
+        ProductProfile::TerminalOnly
+    ));
+    assert!(tab_config_is_supported_for_profile(
+        &config,
+        ProductProfile::Full
+    ));
+}
 
 #[test]
 fn test_find_matching_config() {

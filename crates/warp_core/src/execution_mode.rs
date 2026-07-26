@@ -2,6 +2,8 @@ use std::sync::OnceLock;
 
 use warpui_core::{Entity, ModelContext, SingletonEntity};
 
+use crate::channel::{ChannelState, ProductProfile};
+
 // Global execution mode, for logic that runs outside the UI framework.
 static GLOBAL_EXECUTION_MODE: OnceLock<ExecutionMode> = OnceLock::new();
 
@@ -82,7 +84,11 @@ impl AppExecutionMode {
 
     /// Whether the app can automatically start MCP servers from the previous session.
     pub fn can_autostart_mcp_servers(&self) -> bool {
-        self.is_app()
+        self.can_autostart_mcp_servers_for_profile(ChannelState::product_profile())
+    }
+
+    fn can_autostart_mcp_servers_for_profile(&self, profile: ProductProfile) -> bool {
+        self.is_app() && profile.supports_mcp_server_autostart()
     }
 
     /// Whether the app can show interactive onboarding UIs (e.g. the onboarding
@@ -142,3 +148,7 @@ impl SingletonEntity for AppExecutionMode {}
 pub fn current_client_id() -> Option<&'static str> {
     GLOBAL_EXECUTION_MODE.get().map(|mode| mode.client_id())
 }
+
+#[cfg(test)]
+#[path = "execution_mode_tests.rs"]
+mod tests;

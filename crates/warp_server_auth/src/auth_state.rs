@@ -5,7 +5,7 @@ use anyhow::anyhow;
 use chrono::{DateTime, Duration, Utc};
 use parking_lot::RwLock;
 use uuid::Uuid;
-use warp_core::channel::{Channel, ChannelState};
+use warp_core::channel::{Channel, ChannelState, ProductProfile};
 use warp_errors::report_error;
 use warp_graphql::object_permissions::OwnerType;
 use warpui_core::{AppContext, Entity, SingletonEntity};
@@ -120,7 +120,15 @@ impl AuthState {
     pub fn initialize(ctx: &AppContext, api_key: Option<String>) -> Self {
         let state = Self::new(ctx);
 
-        if Self::should_use_test_user() {
+        // Keep this check before the test-user shortcut: terminal-only builds
+        // must stay logged out even when compiled with skip_login/test-util or
+        // running on the integration channel.
+        let product_profile = ChannelState::product_profile();
+        if !can_restore_persisted_user(product_profile) {
+            return state;
+        }
+
+        if should_initialize_test_user(product_profile, Self::should_use_test_user()) {
             state.set_user(Some(User::test()));
             #[cfg(any(
                 test,
@@ -183,6 +191,10 @@ impl AuthState {
 
     /// Determines the appropriate persistence action based on the current auth state.
     pub fn persist_action(&self) -> PersistAction {
+        if !can_restore_persisted_user(ChannelState::product_profile()) {
+            return PersistAction::DoNothing;
+        }
+
         let user = self.user.read().clone();
         let credentials = self.credentials.read().clone();
 
@@ -554,6 +566,17 @@ impl AuthState {
     }
 }
 
+fn can_restore_persisted_user(product_profile: ProductProfile) -> bool {
+    product_profile.supports_authentication()
+}
+
+fn should_initialize_test_user(
+    product_profile: ProductProfile,
+    test_shortcut_enabled: bool,
+) -> bool {
+    can_restore_persisted_user(product_profile) && test_shortcut_enabled
+}
+
 // Adapter for the [`warp_managed_secrets`] crate, which needs to access the current user.
 impl warp_managed_secrets::ActorProvider for AuthState {
     fn actor_uid(&self) -> Option<String> {
@@ -606,3 +629,7 @@ impl Entity for AuthStateProvider {
 }
 
 impl SingletonEntity for AuthStateProvider {}
+
+#[cfg(test)]
+#[path = "auth_state_tests.rs"]
+mod tests;

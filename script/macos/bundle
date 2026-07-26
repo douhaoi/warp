@@ -484,9 +484,11 @@ if [[ "$ARTIFACT" == "app" ]]; then
     </array>" "$BUNDLE_DIR"/$WARP_APP_NAME.app/Contents/Info.plist
   fi
 
-  # Temporary key that ChatGPT Desktop can use to determine if the latest version of Warp supports the ChatGPT integration.
-  # Once support has been rolled out for a sufficient amount of time we (and ChatGPT) can remove this.
-  plutil -insert SUPPORTS_CHAT_GPT_WORK_WITH_APPS -bool true "$BUNDLE_DIR"/$WARP_APP_NAME.app/Contents/Info.plist
+  if [[ ",$FEATURES," != *",terminal_only,"* ]]; then
+    # Temporary key that ChatGPT Desktop can use to determine if the latest version of Warp supports the ChatGPT integration.
+    # Once support has been rolled out for a sufficient amount of time we (and ChatGPT) can remove this.
+    plutil -insert SUPPORTS_CHAT_GPT_WORK_WITH_APPS -bool true "$BUNDLE_DIR"/$WARP_APP_NAME.app/Contents/Info.plist
+  fi
 
   # Add LSBackgroundOnly key and set it to false since we need a UI app
   plutil -insert LSBackgroundOnly -bool false "$BUNDLE_DIR"/$WARP_APP_NAME.app/Contents/Info.plist

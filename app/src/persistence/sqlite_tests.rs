@@ -15,6 +15,7 @@ use super::{
     app_database_file_path, database_file_path_for_current_scope, database_file_path_for_scope,
     decode_path, deduplicate_events, encode_path, get_all_codebase_index_metadata,
     read_sqlite_data, save_app_state, save_codebase_index_metadata, setup_database, start_writer,
+    terminal_only_database_file_path,
 };
 use crate::app_state::{
     AppState, CodePaneSnapShot, CodePaneTabSnapshot, LeafContents, LeafSnapshot, PaneNodeSnapshot,
@@ -37,6 +38,22 @@ fn app_scope_database_path_matches_app_database_path() {
     assert_eq!(
         database_file_path_for_scope(&PersistenceScope::App),
         app_database_file_path()
+    );
+}
+
+#[test]
+fn terminal_only_scope_database_path_is_separate_from_the_app_database() {
+    let terminal_only_path = database_file_path_for_scope(&PersistenceScope::TerminalOnly);
+    let app_path = database_file_path_for_scope(&PersistenceScope::App);
+
+    assert_eq!(terminal_only_path, terminal_only_database_file_path());
+    assert_ne!(terminal_only_path, app_path);
+    assert_eq!(
+        terminal_only_path,
+        warp_core::paths::secure_state_dir()
+            .unwrap_or_else(warp_core::paths::state_dir)
+            .join("terminal-only")
+            .join("warp.sqlite")
     );
 }
 

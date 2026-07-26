@@ -130,6 +130,7 @@ use super::shared_session::viewer::history_model::SharedSessionHistoryModel;
 use super::shell::ShellType;
 use super::universal_developer_input::{
     UniversalDeveloperInputButtonBar, UniversalDeveloperInputButtonBarEvent,
+    universal_developer_input_is_supported_for_profile,
 };
 use super::view::ambient_agent::{
     AmbientAgentViewModel, AmbientAgentViewModelEvent, is_cloud_agent_pre_first_exchange,
@@ -6740,6 +6741,15 @@ impl Input {
         event: &UniversalDeveloperInputButtonBarEvent,
         ctx: &mut ViewContext<Self>,
     ) {
+        if ChannelState::is_terminal_only()
+            && !matches!(
+                event,
+                UniversalDeveloperInputButtonBarEvent::InputTypeSelected(_)
+            )
+        {
+            return;
+        }
+
         match event {
             #[cfg(feature = "voice_input")]
             UniversalDeveloperInputButtonBarEvent::ToggleVoiceInput(from) => {
@@ -15908,7 +15918,8 @@ impl Input {
     }
 
     pub fn should_show_universal_developer_input(&self, app: &AppContext) -> bool {
-        InputSettings::as_ref(app).is_universal_developer_input_enabled(app)
+        universal_developer_input_is_supported_for_profile(ChannelState::product_profile())
+            && InputSettings::as_ref(app).is_universal_developer_input_enabled(app)
     }
 
     fn handle_prompt_suggestions_event(
@@ -15967,6 +15978,22 @@ impl TypedActionView for Input {
     }
 
     fn handle_action(&mut self, action: &InputAction, ctx: &mut ViewContext<Self>) {
+        if ChannelState::is_terminal_only()
+            && matches!(
+                action,
+                InputAction::ToggleAgentViewShortcuts
+                    | InputAction::ClearAndResetAIContextMenuQuery
+                    | InputAction::ToggleSlashCommandsMenu
+                    | InputAction::TriggerSlashCommandFromKeybinding(_)
+                    | InputAction::DismissCloudModeV2SlashCommandsMenu
+                    | InputAction::OpenModelSelector
+                    | InputAction::ClearAttachedContext
+                    | InputAction::ActivateCloudHandoff
+            )
+        {
+            return;
+        }
+
         match action {
             InputAction::FocusInputBox => self.focus_input_box(ctx),
             InputAction::Up => self.editor_up(ctx),

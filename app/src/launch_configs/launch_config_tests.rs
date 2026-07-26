@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use super::{CommandTemplate, LaunchConfig, PaneMode, PaneTemplateType};
+use super::{
+    CommandTemplate, LaunchConfig, PaneMode, PaneTemplateType,
+    SplitDirection as LaunchConfigSplitDirection, make_mock_single_window_launch_config,
+};
 use crate::app_state::{
     AppState, BranchSnapshot, LeafContents, LeafSnapshot, NotebookPaneSnapshot, PaneFlex,
     PaneNodeSnapshot, SplitDirection, TabSnapshot, TerminalPaneSnapshot, WindowSnapshot,
@@ -40,6 +43,27 @@ fn single_tab_snapshot(root: PaneNodeSnapshot) -> AppState {
         block_lists: Default::default(),
         running_mcp_servers: Default::default(),
     }
+}
+
+#[test]
+fn terminal_only_scan_visits_every_pane_in_nested_layouts() {
+    let mut config = make_mock_single_window_launch_config();
+    let terminal_pane = config.windows[0].tabs[0].layout.clone();
+    config.windows[0].tabs[0].layout = PaneTemplateType::PaneBranchTemplate {
+        split_direction: LaunchConfigSplitDirection::Horizontal,
+        panes: vec![
+            terminal_pane,
+            PaneTemplateType::PaneTemplate {
+                cwd: PathBuf::new(),
+                commands: Vec::new(),
+                is_focused: None,
+                pane_mode: PaneMode::Cloud,
+                shell: None,
+            },
+        ],
+    };
+
+    assert!(!config.has_only_terminal_panes());
 }
 
 fn multi_tab_snapshot(active_tab_index: usize, tabs: Vec<TabSnapshot>) -> AppState {

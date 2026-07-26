@@ -333,6 +333,7 @@ use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
 /// Our embedded application assets.
 pub static ASSETS: warp_assets::Assets = warp_assets::Assets;
 const TUI_SECURE_STORAGE_SERVICE_SUFFIX: &str = ".tui";
+const TERMINAL_ONLY_SECURE_STORAGE_SERVICE_SUFFIX: &str = ".terminal-only";
 
 fn determine_agent_source(
     launch_mode: &LaunchMode,
@@ -482,16 +483,48 @@ impl LaunchMode {
     /// created by the GUI. On macOS, those items' Keychain ACLs trust the GUI's
     /// distinct code-signing identity and would otherwise prompt for the user's
     /// login password when the TUI accesses them.
-    fn secure_storage_service_name<'a>(&self, data_domain: &'a str) -> Cow<'a, str> {
-        match self {
-            LaunchMode::Tui { .. } => {
+    fn secure_storage_service_name<'a>(
+        &self,
+        data_domain: &'a str,
+        product_profile: channel::ProductProfile,
+    ) -> Cow<'a, str> {
+        match (self, product_profile) {
+            (LaunchMode::Tui { .. }, channel::ProductProfile::TerminalOnly) => Cow::Owned(format!(
+                "{data_domain}{TERMINAL_ONLY_SECURE_STORAGE_SERVICE_SUFFIX}{TUI_SECURE_STORAGE_SERVICE_SUFFIX}"
+            )),
+            (LaunchMode::Tui { .. }, channel::ProductProfile::Full) => {
                 Cow::Owned(format!("{data_domain}{TUI_SECURE_STORAGE_SERVICE_SUFFIX}"))
             }
+            (LaunchMode::RemoteServerDaemon { .. }, _) => Cow::Borrowed(data_domain),
+            (_, channel::ProductProfile::TerminalOnly) => Cow::Owned(format!(
+                "{data_domain}{TERMINAL_ONLY_SECURE_STORAGE_SERVICE_SUFFIX}"
+            )),
+            (_, channel::ProductProfile::Full) => Cow::Borrowed(data_domain),
+        }
+    }
+
+    fn persistence_scope(
+        &self,
+        product_profile: channel::ProductProfile,
+    ) -> persistence::PersistenceScope {
+        match self {
+            LaunchMode::RemoteServerDaemon { identity_key } => {
+                persistence::PersistenceScope::RemoteServerDaemon {
+                    identity_key: identity_key.clone(),
+                }
+            }
+            // The TUI keeps its own database so GUI/TUI version skew can never
+            // migrate a shared database out from under the older binary.
+            LaunchMode::Tui { .. } => persistence::PersistenceScope::Tui,
             LaunchMode::App { .. }
             | LaunchMode::CommandLine { .. }
-            | LaunchMode::Test { .. }
             | LaunchMode::RemoteServerProxy
-            | LaunchMode::RemoteServerDaemon { .. } => Cow::Borrowed(data_domain),
+            | LaunchMode::Test { .. } => match product_profile {
+                channel::ProductProfile::Full => persistence::PersistenceScope::App,
+                channel::ProductProfile::TerminalOnly => {
+                    persistence::PersistenceScope::TerminalOnly
+                }
+            },
         }
     }
 
@@ -1306,6 +1339,47 @@ pub struct UpdateQuakeModeEventArg {
     active_window_id: Option<WindowId>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExecutionProfileInitialization {
+    CurrentLaunchMode,
+    LocalSettingsOnly,
+}
+
+fn execution_profile_initialization(
+    product_profile: channel::ProductProfile,
+) -> ExecutionProfileInitialization {
+    match product_profile {
+        channel::ProductProfile::Full => ExecutionProfileInitialization::CurrentLaunchMode,
+        // The TUI profile backend is settings-only and never scans legacy Warp
+        // Drive execution-profile objects. It provides the singleton expected
+        // by shared terminal code without activating the cloud profile path.
+        channel::ProductProfile::TerminalOnly => ExecutionProfileInitialization::LocalSettingsOnly,
+    }
+}
+
+fn initialize_execution_profiles(
+    launch_mode: &LaunchMode,
+    product_profile: channel::ProductProfile,
+    ctx: &mut warpui::ModelContext<AIExecutionProfilesModel>,
+) -> AIExecutionProfilesModel {
+    match execution_profile_initialization(product_profile) {
+        ExecutionProfileInitialization::CurrentLaunchMode => {
+            AIExecutionProfilesModel::new(launch_mode, ctx)
+        }
+        ExecutionProfileInitialization::LocalSettingsOnly => {
+            let terminal_only_launch_mode = LaunchMode::Tui {
+                mount: Box::new(|_| {}),
+                api_key: None,
+            };
+            AIExecutionProfilesModel::new(&terminal_only_launch_mode, ctx)
+        }
+    }
+}
+
+fn logged_out_startup_reporting_is_enabled(product_profile: channel::ProductProfile) -> bool {
+    product_profile.supports_telemetry()
+}
+
 fn refresh_user_after_iap_access(ctx: &mut AppContext) {
     let iap_manager = IapManager::handle(ctx);
     if !iap_manager.as_ref(ctx).is_enabled() || iap_manager.as_ref(ctx).has_valid_token() {
@@ -1349,7 +1423,9 @@ pub(crate) fn initialize_app(
     // Sentry. Only the dependencies of crash_reporting should be initialized here. Avoid adding
     // any other stuff here, as failures will be silent. Push them to pre_sentry_errors instead.
     let data_domain = ChannelState::data_domain();
-    let secure_storage_service_name = launch_mode.secure_storage_service_name(&data_domain);
+    let product_profile = ChannelState::product_profile();
+    let secure_storage_service_name =
+        launch_mode.secure_storage_service_name(&data_domain, product_profile);
 
     // Daemon auth arrives through the client handshake, so avoid platform keychains that may
     // require an interactive unlock prompt. Other headless modes still use secure storage for
@@ -1466,12 +1542,14 @@ pub(crate) fn initialize_app(
     server_api.set_ambient_agent_task_id(ambient_agent_task_id);
     let ai_client = server_api_provider.as_ref(ctx).get_ai_client();
     #[cfg(not(target_family = "wasm"))]
-    // Refresh starts only after the authenticated server client exists; tracing initialization
-    // remains responsible for deciding whether this process opted in to cloud-agent export.
-    tracing::start_auth_refresh(
-        server_api_provider.as_ref(ctx).get_managed_secrets_client(),
-        ctx,
-    );
+    if product_profile.supports_authentication() {
+        // Refresh starts only after the authenticated server client exists; tracing initialization
+        // remains responsible for deciding whether this process opted in to cloud-agent export.
+        tracing::start_auth_refresh(
+            server_api_provider.as_ref(ctx).get_managed_secrets_client(),
+            ctx,
+        );
+    }
 
     ctx.add_singleton_model(|_ctx| AuthStateProvider::new(auth_state.clone()));
 
@@ -1491,20 +1569,7 @@ pub(crate) fn initialize_app(
 
     // If any part of sqlite initialization fails, we just don't do session restoration (i.e.
     // feature degradation).
-    let persistence_scope = match launch_mode {
-        LaunchMode::RemoteServerDaemon { identity_key } => {
-            persistence::PersistenceScope::RemoteServerDaemon {
-                identity_key: identity_key.clone(),
-            }
-        }
-        // The TUI keeps its own database so GUI/TUI version skew can never
-        // migrate a shared database out from under the older binary.
-        LaunchMode::Tui { .. } => persistence::PersistenceScope::Tui,
-        LaunchMode::App { .. }
-        | LaunchMode::CommandLine { .. }
-        | LaunchMode::RemoteServerProxy
-        | LaunchMode::Test { .. } => persistence::PersistenceScope::App,
-    };
+    let persistence_scope = launch_mode.persistence_scope(product_profile);
     // Only read the subsets of persisted data this launch mode actually
     // consumes; loading everything is expensive on large databases.
     let persisted_data_scope = match launch_mode {
@@ -1837,11 +1902,13 @@ pub(crate) fn initialize_app(
     } else {
         // If the app was opened while logged out, record an event for measuring new users.
         // This is sent immediately in case they quit the app on the signup screen.
-        send_telemetry_sync_from_app_ctx!(TelemetryEvent::LoggedOutStartup, ctx);
-        download_method::determine_and_report(
-            auth_state.clone(),
-            ctx.background_executor().clone(),
-        );
+        if logged_out_startup_reporting_is_enabled(ChannelState::product_profile()) {
+            send_telemetry_sync_from_app_ctx!(TelemetryEvent::LoggedOutStartup, ctx);
+            download_method::determine_and_report(
+                auth_state.clone(),
+                ctx.background_executor().clone(),
+            );
+        }
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -2301,7 +2368,10 @@ pub(crate) fn initialize_app(
     // CLI commands establish IAP access and refresh auth in their dispatch path so they can
     // surface failures synchronously. Interactive clients wait for IAP here before refreshing
     // their persisted user, since the refresh itself calls the IAP-gated warp-server.
-    if user_is_logged_in && !matches!(launch_mode, LaunchMode::CommandLine { .. }) {
+    if product_profile.supports_authentication()
+        && user_is_logged_in
+        && !matches!(launch_mode, LaunchMode::CommandLine { .. })
+    {
         refresh_user_after_iap_access(ctx);
     }
 
@@ -2370,7 +2440,7 @@ pub(crate) fn initialize_app(
 
     ctx.add_singleton_model(move |_| timer);
 
-    ctx.add_singleton_model(|ctx| AIExecutionProfilesModel::new(launch_mode, ctx));
+    ctx.add_singleton_model(|ctx| initialize_execution_profiles(launch_mode, product_profile, ctx));
 
     ctx.add_singleton_model(DefaultTerminal::new);
 

@@ -144,6 +144,8 @@ fn initializes_with_indexing_disabled_when_configured() {
             assert!(!manager.is_indexing_enabled());
             assert_eq!(manager.num_active_indices(), 0);
             assert!(!manager.can_create_new_indices());
+            #[cfg(feature = "local_fs")]
+            assert!(manager.watcher.is_none());
         });
     });
 }

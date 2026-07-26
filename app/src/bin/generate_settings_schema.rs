@@ -2,7 +2,7 @@
 //!
 //! Usage:
 //! ```
-//! cargo run --bin generate_settings_schema -- [--channel dev|preview|stable] [output_path]
+//! cargo run --bin generate_settings_schema -- [--channel dev|preview|stable|oss] [output_path]
 //! ```
 
 use std::collections::HashSet;
@@ -92,6 +92,8 @@ fn active_flags_for_channel(channel: &str) -> HashSet<FeatureFlag> {
         "stable" => &[RELEASE_FLAGS],
         "preview" => &[RELEASE_FLAGS, PREVIEW_FLAGS],
         "dev" => &[RELEASE_FLAGS, PREVIEW_FLAGS, DOGFOOD_FLAGS, DEBUG_FLAGS],
+        // OSS builds use the same locally available settings surface as dev builds.
+        "oss" => &[RELEASE_FLAGS, PREVIEW_FLAGS, DOGFOOD_FLAGS, DEBUG_FLAGS],
         other => {
             eprintln!("Unknown channel '{other}', defaulting to dev");
             &[RELEASE_FLAGS, PREVIEW_FLAGS, DOGFOOD_FLAGS, DEBUG_FLAGS]

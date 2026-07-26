@@ -1,10 +1,9 @@
-use crate::channel::ProductProfile;
-use crate::util::bindings::CustomAction;
-
 use super::{
     ProfiledMenu, ProfiledMenuAction, menu_action_is_supported_for_profile,
     menu_is_supported_for_profile, supported_profiled_actions,
 };
+use crate::channel::ProductProfile;
+use crate::util::bindings::CustomAction;
 
 #[test]
 fn full_profile_preserves_targeted_menu_and_action_policy() {

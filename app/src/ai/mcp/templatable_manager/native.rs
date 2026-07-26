@@ -13,7 +13,7 @@ use parking_lot::Mutex;
 use simple_logger::manager::LogManager;
 use url::Url;
 use uuid::Uuid;
-use warp_core::channel::ChannelState;
+use warp_core::channel::{ChannelState, ProductProfile};
 use warp_core::execution_mode::AppExecutionMode;
 use warp_core::features::FeatureFlag;
 use warp_core::safe_error;
@@ -68,6 +68,22 @@ enum SpawnMode {
     ///
     /// Waiters are notified via `pending_reconnections` when the connection completes.
     Reconnect,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct StartupMcpStatePolicy {
+    load_persisted_credentials: bool,
+    restore_running_servers: bool,
+    migrate_legacy_servers: bool,
+}
+
+fn startup_mcp_state_policy_for_profile(profile: ProductProfile) -> StartupMcpStatePolicy {
+    let is_supported = profile.supports_mcp_server_autostart();
+    StartupMcpStatePolicy {
+        load_persisted_credentials: is_supported,
+        restore_running_servers: is_supported,
+        migrate_legacy_servers: is_supported,
+    }
 }
 
 impl SpawnMode {
@@ -245,6 +261,9 @@ impl TemplatableMCPServerManager {
         running_legacy_server_uuids: &[Uuid],
         ctx: &mut ModelContext<Self>,
     ) -> Self {
+        let startup_mcp_state_policy =
+            startup_mcp_state_policy_for_profile(ChannelState::product_profile());
+
         // Subscribe to FileBasedMCPManager events.
         let file_based_mcp_manager = FileBasedMCPManager::handle(ctx);
         ctx.subscribe_to_model(&file_based_mcp_manager, |me, _, event, ctx| match event {
@@ -379,7 +398,7 @@ impl TemplatableMCPServerManager {
         me.fetch_cloud_servers(ctx);
 
         // If we're not in a test, try to load credentials from secure storage.
-        if !cfg!(test) {
+        if !cfg!(test) && startup_mcp_state_policy.load_persisted_credentials {
             me.server_credentials = load_credentials_from_secure_storage::<PersistedCredentialsMap>(
                 ctx,
                 TEMPLATABLE_MCP_CREDENTIALS_KEY,
@@ -394,16 +413,20 @@ impl TemplatableMCPServerManager {
             }
         }
 
-        if AppExecutionMode::as_ref(ctx).can_autostart_mcp_servers() {
+        if startup_mcp_state_policy.restore_running_servers
+            && AppExecutionMode::as_ref(ctx).can_autostart_mcp_servers()
+        {
             for installation_uuid in running_server_uuids {
                 me.spawn_server(installation_uuid, ctx)
             }
         }
 
         // Migrate legacy MCPs to be templatables on app start. Uses UpdateManager
-        let servers_to_restart: HashSet<Uuid> =
-            running_legacy_server_uuids.iter().cloned().collect();
-        me.convert_all_legacy_to_templatable(servers_to_restart, ctx);
+        if startup_mcp_state_policy.migrate_legacy_servers {
+            let servers_to_restart: HashSet<Uuid> =
+                running_legacy_server_uuids.iter().cloned().collect();
+            me.convert_all_legacy_to_templatable(servers_to_restart, ctx);
+        }
 
         me
     }
@@ -1896,3 +1919,7 @@ impl TemplatableMCPServerManager {
             .contains_key(&installation_hash)
     }
 }
+
+#[cfg(test)]
+#[path = "native_tests.rs"]
+mod tests;

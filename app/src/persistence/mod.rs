@@ -70,6 +70,9 @@ use crate::workspaces::workspace::{Workspace as WorkspaceMetadata, WorkspaceUid}
 pub enum PersistenceScope {
     /// The GUI app (and other launch modes that share its database).
     App,
+    /// The terminal-only GUI product profile. It keeps a separate database
+    /// so it never reads, migrates, or deletes the full WarpOss GUI database.
+    TerminalOnly,
     /// The `warp-tui` front-end, which keeps its own database so GUI/TUI
     /// version skew can never migrate a shared database out from under the
     /// older binary. Cloud sync is the cross-front-end sharing mechanism.

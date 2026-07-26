@@ -3,7 +3,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use warpui::{App, SingletonEntity};
 
-use super::{AuthManager, AuthManagerEvent, authenticated_user_profile_policy};
+use super::{
+    AuthManager, AuthManagerEvent, authenticated_user_profile_policy,
+    authentication_is_supported_for_profile,
+};
 use crate::ServerApiProvider;
 use crate::auth::auth_view_modal::AuthRedirectPayload;
 use crate::auth::credentials::{Credentials, RefreshToken};
@@ -31,6 +34,16 @@ fn authenticated_user_profile_policy_preserves_full_and_disables_terminal_only_b
         );
         assert_eq!(policy.rejoins_shared_sessions, rejoins_shared_sessions);
     }
+}
+
+#[test]
+fn authentication_entrypoints_are_disabled_for_terminal_only() {
+    assert!(authentication_is_supported_for_profile(
+        ProductProfile::Full
+    ));
+    assert!(!authentication_is_supported_for_profile(
+        ProductProfile::TerminalOnly
+    ));
 }
 
 /// Subscribes to `AuthManager` events and returns a flag that becomes `true`

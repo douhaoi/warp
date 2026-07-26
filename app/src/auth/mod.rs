@@ -21,6 +21,7 @@ pub use auth_state::AuthStateProvider;
 use itertools::Itertools;
 pub use login_failure_notification::LoginFailureReason;
 pub use user_uid::UserUid;
+use warp_core::channel::{ChannelState, ProductProfile};
 use warp_core::user_preferences::GetUserPreferences as _;
 use warp_errors::{report_error, report_if_error};
 use warpui::modals::{AlertDialogWithCallbacks, ModalButton};
@@ -62,9 +63,17 @@ pub fn init(app: &mut AppContext) {
     paste_auth_token_modal::init(app);
 }
 
+pub(crate) fn logout_is_supported_for_profile(product_profile: ProductProfile) -> bool {
+    product_profile.supports_authentication()
+}
+
 /// If the app has running processes or dirty objects, we'll show a confirmation modal before logging out.
 /// If the user aborts, the user will not be logged out.
 pub fn maybe_log_out(app: &mut AppContext) {
+    if !logout_is_supported_for_profile(ChannelState::product_profile()) {
+        return;
+    }
+
     send_telemetry_sync_from_app_ctx!(TelemetryEvent::UserInitiatedLogOut, app);
 
     let sessions = SessionNavigationData::all_sessions(app).collect_vec();
@@ -208,6 +217,10 @@ pub fn maybe_log_out(app: &mut AppContext) {
 
 // Log out the user, clears workspace state, stops running processes, and deletes database.
 pub fn log_out(app: &mut AppContext) {
+    if !logout_is_supported_for_profile(ChannelState::product_profile()) {
+        return;
+    }
+
     send_telemetry_sync_from_app_ctx!(TelemetryEvent::LogOut, app);
 
     CodebaseIndexManager::handle(app).update(app, |index_manager, ctx| {

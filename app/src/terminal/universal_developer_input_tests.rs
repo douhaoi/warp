@@ -1,6 +1,16 @@
 use super::*;
 
 #[test]
+fn terminal_only_profile_hides_universal_developer_input() {
+    assert!(universal_developer_input_is_supported_for_profile(
+        ProductProfile::Full
+    ));
+    assert!(!universal_developer_input_is_supported_for_profile(
+        ProductProfile::TerminalOnly
+    ));
+}
+
+#[test]
 fn full_profile_preserves_universal_developer_input_toggle_options_and_defaults() {
     assert_eq!(
         universal_developer_input_toggle_options_and_default(

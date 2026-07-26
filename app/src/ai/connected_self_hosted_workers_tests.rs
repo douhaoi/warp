@@ -1,5 +1,17 @@
 use super::*;
 
+#[test]
+fn terminal_only_profile_disables_connected_workers_refresh() {
+    assert!(
+        !connected_self_hosted_workers_refresh_is_enabled_for_profile(ProductProfile::TerminalOnly)
+    );
+}
+
+#[test]
+fn full_profile_allows_connected_workers_refresh() {
+    assert!(connected_self_hosted_workers_refresh_is_enabled_for_profile(ProductProfile::Full));
+}
+
 fn worker(worker_host: &str) -> ConnectedSelfHostedWorker {
     ConnectedSelfHostedWorker {
         worker_host: worker_host.to_string(),

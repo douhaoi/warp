@@ -7,7 +7,23 @@ use input_classifier::{HeuristicClassifier, InputClassifier};
     feature = "nld_classifier_v3"
 ))]
 use input_classifier::{OnnxClassifier, OnnxModel};
+use warp_core::channel::ProductProfile;
 use warpui::{Entity, ModelContext, SingletonEntity};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum InputClassifierInitialization {
+    HeuristicOnly,
+    LoadOnnxWhenAvailable,
+}
+
+fn input_classifier_initialization(
+    product_profile: ProductProfile,
+) -> InputClassifierInitialization {
+    match product_profile {
+        ProductProfile::Full => InputClassifierInitialization::LoadOnnxWhenAvailable,
+        ProductProfile::TerminalOnly => InputClassifierInitialization::HeuristicOnly,
+    }
+}
 
 pub struct InputClassifierModel {
     pub classifier: Arc<dyn InputClassifier>,
@@ -15,6 +31,14 @@ pub struct InputClassifierModel {
 
 impl InputClassifierModel {
     pub fn new(_ctx: &mut ModelContext<Self>) -> Self {
+        if input_classifier_initialization(warp_core::channel::ChannelState::product_profile())
+            == InputClassifierInitialization::HeuristicOnly
+        {
+            return Self {
+                classifier: Arc::new(HeuristicClassifier),
+            };
+        }
+
         #[cfg(feature = "nld_classifier_v1")]
         {
             match OnnxClassifier::new(OnnxModel::BertTinyV1) {
@@ -69,3 +93,7 @@ impl Entity for InputClassifierModel {
 }
 
 impl SingletonEntity for InputClassifierModel {}
+
+#[cfg(test)]
+#[path = "input_classifier_tests.rs"]
+mod tests;

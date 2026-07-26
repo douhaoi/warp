@@ -17,6 +17,7 @@ use warp_core::ui::color::blend::Blend;
 use warp_core::ui::color::coloru_with_opacity;
 use warp_core::ui::theme::color::internal_colors;
 use warp_core::ui::theme::{AnsiColorIdentifier, Fill as WarpThemeFill, WarpTheme};
+use warp_util::local_or_remote_path::LocalOrRemotePath;
 use warpui::elements::{
     Border, ChildAnchor, Clipped, ClippedScrollStateHandle, ClippedScrollable, ConstrainedBox,
     Container, CornerRadius, CrossAxisAlignment, DispatchEventResult, DragAxis, DragBarSide,
@@ -84,7 +85,6 @@ use crate::workspace::{
     VerticalTabsPaneDropTargetData, Workspace,
 };
 use crate::{FeatureFlag, send_telemetry_from_app_ctx};
-use warp_util::local_or_remote_path::LocalOrRemotePath;
 
 const PANEL_WIDTH: f32 = 248.;
 const MIN_PANEL_WIDTH: f32 = 200.;

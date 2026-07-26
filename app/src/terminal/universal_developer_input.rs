@@ -272,6 +272,12 @@ impl From<&BlocklistAIInputModel> for InputToggleMode {
     }
 }
 
+pub(crate) fn universal_developer_input_is_supported_for_profile(
+    product_profile: ProductProfile,
+) -> bool {
+    product_profile == ProductProfile::Full
+}
+
 fn universal_developer_input_toggle_options_and_default(
     product_profile: ProductProfile,
     input_config: InputConfig,

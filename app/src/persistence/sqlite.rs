@@ -454,6 +454,7 @@ fn setup_database(database_path: &Path) -> Result<SqliteConnection> {
 pub fn database_file_path_for_scope(scope: &PersistenceScope) -> PathBuf {
     match scope {
         PersistenceScope::App => app_database_file_path(),
+        PersistenceScope::TerminalOnly => terminal_only_database_file_path(),
         PersistenceScope::Tui => tui_database_file_path(),
         PersistenceScope::RemoteServerDaemon { identity_key } => {
             remote_server_daemon_database_file_path(identity_key)
@@ -479,6 +480,13 @@ fn app_database_file_path() -> PathBuf {
 
 fn tui_database_file_path() -> PathBuf {
     warp_core::paths::tui_state_dir().join(WARP_SQLITE_FILE_NAME)
+}
+
+fn terminal_only_database_file_path() -> PathBuf {
+    warp_core::paths::secure_state_dir()
+        .unwrap_or_else(warp_core::paths::state_dir)
+        .join("terminal-only")
+        .join(WARP_SQLITE_FILE_NAME)
 }
 
 fn remote_server_daemon_database_file_path(identity_key: &str) -> PathBuf {

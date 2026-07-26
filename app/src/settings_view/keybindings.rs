@@ -24,6 +24,7 @@ use super::settings_page::{
     SettingsWidget, render_sub_header,
 };
 use crate::appearance::Appearance;
+use crate::channel::{ChannelState, ProductProfile};
 use crate::editor::{
     EditorView, Event as EditorEvent, PropagateAndNoOpNavigationKeys, SingleLineEditorOptions,
     TextOptions,
@@ -32,7 +33,7 @@ use crate::keyboard::{UserDefinedKeybinding, write_custom_keybinding};
 use crate::search_bar::SearchBar;
 use crate::settings::CloudPreferencesSettings;
 use crate::util::bindings::{
-    CommandBinding, filter_bindings_including_keystroke, reset_keybinding_to_default,
+    BindingGroup, CommandBinding, filter_bindings_including_keystroke, reset_keybinding_to_default,
     set_custom_keybinding,
 };
 use crate::{TelemetryEvent, send_telemetry_from_ctx, themes};
@@ -52,6 +53,23 @@ const RESET_BUTTON_TEXT: &str = "Default";
 const CANCEL_BUTTON_TEXT: &str = "Cancel";
 const CLEAR_BUTTON_TEXT: &str = "Clear";
 const SAVE_BUTTON_TEXT: &str = "Save";
+
+fn keybinding_group_is_supported_for_profile(
+    group: Option<BindingGroup>,
+    product_profile: ProductProfile,
+) -> bool {
+    product_profile == ProductProfile::Full
+        || !matches!(
+            group,
+            Some(
+                BindingGroup::WarpAi
+                    | BindingGroup::Workflow
+                    | BindingGroup::Notebooks
+                    | BindingGroup::Folders
+                    | BindingGroup::EnvVarCollection
+            )
+        )
+}
 
 /// Notifier for custom keybinding changed. Views could subscribe to this for
 /// KeybindingChangedEvent.
@@ -757,6 +775,12 @@ impl SettingsPageMeta for KeybindingsView {
             lenses
                 .into_iter()
                 .map(|lens| CommandBinding::from_editable_lens(lens, ctx))
+                .filter(|binding| {
+                    keybinding_group_is_supported_for_profile(
+                        binding.group,
+                        ChannelState::product_profile(),
+                    )
+                })
                 .sorted_by(|a, b| {
                     // Sort by description then name so that we can deduplicate bindings by name.
                     a.description
@@ -827,6 +851,10 @@ impl SettingsPageMeta for KeybindingsView {
         self.page.clear_highlighted_widget();
     }
 }
+
+#[cfg(test)]
+#[path = "keybindings_tests.rs"]
+mod tests;
 
 impl From<ViewHandle<KeybindingsView>> for SettingsPageViewHandle {
     fn from(view_handle: ViewHandle<KeybindingsView>) -> Self {

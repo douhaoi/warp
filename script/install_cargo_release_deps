@@ -25,4 +25,6 @@ if [ "$NO_BUILD_DEPS" = false ]; then
 fi
 
 # Install cargo-about for generating third-party license attribution.
-cargo install --locked cargo-about@0.8.4
+# 0.9.1 accepts deprecated SPDX identifiers from external sources and
+# normalizes detected GNU licenses to their non-deprecated `-or-later` form.
+cargo install --locked cargo-about@0.9.1

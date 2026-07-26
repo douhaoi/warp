@@ -18,6 +18,7 @@ use crate::ai::agent_conversations_model::AgentConversationsModel;
 use crate::ai::blocklist::BlocklistAIHistoryModel;
 use crate::ai::blocklist::agent_view::{AgentViewController, AgentViewControllerEvent};
 use crate::ai::blocklist::block::cli_controller::CLISubagentController;
+use crate::channel::ChannelState;
 use crate::search::SyncDataSource;
 use crate::search::data_source::{Query, QueryResult};
 use crate::search::mixer::DataSourceRunErrorWrapper;
@@ -155,6 +156,10 @@ impl GuiSlashCommandDataSource {
     }
 
     pub(crate) fn command_is_active(&self, command: &StaticCommand, ctx: &AppContext) -> bool {
+        if ChannelState::is_terminal_only() {
+            return false;
+        }
+
         let availability = self.availability(ctx);
         let gates = self.common_command_gates(ctx);
         self.command_passes_common_gates(command, availability, &gates)
@@ -167,6 +172,13 @@ impl GuiSlashCommandDataSource {
     }
 
     fn recompute_active_commands(&mut self, ctx: &mut ModelContext<Self>) {
+        if ChannelState::is_terminal_only() {
+            if self.replace_active_commands(HashMap::new()) {
+                ctx.emit(UpdatedActiveCommands);
+            }
+            return;
+        }
+
         let availability = self.availability(ctx);
         let gates = self.common_command_gates(ctx);
         let commands = HashMap::from_iter(

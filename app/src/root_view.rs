@@ -117,6 +117,17 @@ pub(crate) fn can_access_team_features_for_profile(product_profile: ProductProfi
     product_profile == ProductProfile::Full
 }
 
+pub(crate) fn can_open_launch_config_for_profile(
+    launch_config: &launch_config::LaunchConfig,
+    product_profile: ProductProfile,
+) -> bool {
+    product_profile == ProductProfile::Full || launch_config.has_only_terminal_panes()
+}
+
+fn can_show_needs_sso_link_for_profile(product_profile: ProductProfile) -> bool {
+    product_profile.supports_authentication()
+}
+
 lazy_static! {
     static ref FALLBACK_WINDOW_SIZE: Vector2F = vec2f(800.0, 600.0);
     static ref QUAKE_STATE: Arc<Mutex<Option<QuakeModeState>>> = Arc::new(Mutex::new(None));
@@ -534,6 +545,11 @@ fn active_workspace(ctx: &mut AppContext) -> Option<ViewHandle<Workspace>> {
 }
 
 fn open_launch_config(arg: &OpenLaunchConfigArg, ctx: &mut AppContext) {
+    if !can_open_launch_config_for_profile(&arg.launch_config, ChannelState::product_profile()) {
+        log::warn!("Ignoring launch config with unsupported panes for the current product profile");
+        return;
+    }
+
     let active_window_workspace = active_workspace(ctx);
     if arg.launch_config.windows.is_empty() {
         open_new(&(), ctx);
@@ -2023,6 +2039,10 @@ impl RootView {
     }
 
     fn show_needs_sso_link_view(&mut self, email: String, ctx: &mut ViewContext<Self>) -> bool {
+        if !can_show_needs_sso_link_for_profile(ChannelState::product_profile()) {
+            return true;
+        }
+
         self.needs_sso_link_view.update(ctx, |view, _| {
             view.set_email(email);
         });
@@ -2883,6 +2903,10 @@ impl RootView {
 
     #[allow(clippy::ptr_arg)]
     fn handle_incoming_auth_url(&mut self, url: &Url, ctx: &mut ViewContext<Self>) -> bool {
+        if !ChannelState::product_profile().supports_authentication() {
+            return true;
+        }
+
         match AuthRedirectPayload::from_url(url.clone()) {
             Ok(redirect_payload) => {
                 AuthManager::handle(ctx).update(ctx, |auth_manager, ctx| {

@@ -4,6 +4,7 @@ use std::time::Duration;
 use instant::Instant;
 use serde::{Deserialize, Serialize};
 use warp_cli::agent::Harness;
+use warp_core::channel::{ChannelState, ProductProfile};
 use warp_core::features::FeatureFlag;
 use warp_core::user_preferences::GetUserPreferences;
 use warp_errors::report_error;
@@ -23,6 +24,10 @@ use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
 
 const CACHE_KEY: &str = "AvailableHarnesses";
 const AUTH_SECRET_FETCH_FAILURE_COOLDOWN: Duration = Duration::from_secs(60);
+
+fn harness_refresh_is_enabled_for_profile(profile: ProductProfile) -> bool {
+    profile.supports_ai_features()
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct HarnessModelInfo {
@@ -339,6 +344,10 @@ impl HarnessAvailabilityModel {
     }
 
     pub fn refresh(&self, ctx: &mut ModelContext<Self>) {
+        if !harness_refresh_is_enabled_for_profile(ChannelState::product_profile()) {
+            return;
+        }
+
         // The endpoint queries `user`, which requires auth.
         if !AuthStateProvider::as_ref(ctx).get().is_logged_in() {
             return;
@@ -377,6 +386,10 @@ impl HarnessAvailabilityModel {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "harness_availability_tests.rs"]
+mod tests;
 
 fn get_cached(ctx: &ModelContext<HarnessAvailabilityModel>) -> Option<Vec<HarnessAvailability>> {
     let raw = ctx

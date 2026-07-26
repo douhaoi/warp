@@ -21,3 +21,25 @@ fn product_profile_deserializes_terminal_only() {
 
     assert_eq!(profile, ProductProfile::TerminalOnly);
 }
+
+#[test]
+fn full_profile_supports_networked_product_capabilities() {
+    let profile = ProductProfile::Full;
+
+    assert!(profile.supports_authentication());
+    assert!(profile.supports_cloud_features());
+    assert!(profile.supports_ai_features());
+    assert!(profile.supports_telemetry());
+    assert!(profile.supports_mcp_server_autostart());
+}
+
+#[test]
+fn terminal_only_profile_disables_networked_product_capabilities() {
+    let profile = ProductProfile::TerminalOnly;
+
+    assert!(!profile.supports_authentication());
+    assert!(!profile.supports_cloud_features());
+    assert!(!profile.supports_ai_features());
+    assert!(!profile.supports_telemetry());
+    assert!(!profile.supports_mcp_server_autostart());
+}

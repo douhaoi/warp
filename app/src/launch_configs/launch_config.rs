@@ -32,6 +32,16 @@ impl LaunchConfig {
                 .collect::<Vec<WindowTemplate>>(),
         }
     }
+
+    /// Returns whether every pane in every window and tab is a local terminal pane.
+    pub fn has_only_terminal_panes(&self) -> bool {
+        self.windows.iter().all(|window| {
+            window
+                .tabs
+                .iter()
+                .all(|tab| tab.layout.has_only_terminal_panes())
+        })
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
@@ -200,6 +210,15 @@ impl TabTemplate {
 }
 
 impl PaneTemplateType {
+    fn has_only_terminal_panes(&self) -> bool {
+        match self {
+            Self::PaneTemplate { pane_mode, .. } => *pane_mode == PaneMode::Terminal,
+            Self::PaneBranchTemplate { panes, .. } => {
+                panes.iter().all(Self::has_only_terminal_panes)
+            }
+        }
+    }
+
     fn add_commands_to_startup_pane(&mut self, tab_commands: Vec<CommandTemplate>) -> bool {
         match self {
             PaneTemplateType::PaneTemplate { commands, .. } => {

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 use ::settings::ToggleableSetting;
+use warp_core::channel::{ChannelState, ProductProfile};
 use warp_core::execution_mode::AppExecutionMode;
 use warp_errors::report_error;
 use warp_graphql::mutations::create_anonymous_user::AnonymousUserType;
@@ -31,6 +32,12 @@ pub enum ForkedConversationDestination {
     CurrentPane,
     /// Open the forked conversation in a new tab.
     NewTab,
+}
+
+pub(super) fn authentication_global_actions_are_supported_for_profile(
+    product_profile: ProductProfile,
+) -> bool {
+    product_profile.supports_authentication()
 }
 
 impl ForkedConversationDestination {
@@ -182,6 +189,10 @@ fn toggle_debug_network_status(_: &(), ctx: &mut AppContext) {
 }
 
 fn create_anonymous_user(_: &(), ctx: &mut AppContext) {
+    if !authentication_global_actions_are_supported_for_profile(ChannelState::product_profile()) {
+        return;
+    }
+
     log::info!("Creating anonymous user");
     let anonymous_user_type = AnonymousUserType::NativeClientAnonymousUser;
     let auth_client =
@@ -202,6 +213,10 @@ fn undo_close(_: &(), ctx: &mut AppContext) {
 }
 
 fn trigger_maybe_log_out(_: &(), ctx: &mut AppContext) {
+    if !authentication_global_actions_are_supported_for_profile(ChannelState::product_profile()) {
+        return;
+    }
+
     auth::maybe_log_out(ctx)
 }
 
@@ -259,5 +274,9 @@ fn summarize_ai_conversation(prompt: &Option<String>, ctx: &mut AppContext) {
 }
 
 fn trigger_log_out(_: &(), ctx: &mut AppContext) {
+    if !authentication_global_actions_are_supported_for_profile(ChannelState::product_profile()) {
+        return;
+    }
+
     auth::log_out(ctx)
 }

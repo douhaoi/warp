@@ -24,6 +24,7 @@ use self::docker::open_docker_container;
 use crate::ai::active_agent_views_model::{ActiveAgentViewsModel, ConversationOrTaskId};
 use crate::ai::agent::api::ServerConversationToken;
 use crate::ai::ambient_agents::github_auth_notifier::GitHubAuthNotifier;
+use crate::channel::ProductProfile;
 use crate::cloud_object::ObjectType;
 use crate::drive::{OpenWarpDriveObjectArgs, OpenWarpDriveObjectSettings};
 use crate::features::FeatureFlag;
@@ -31,14 +32,16 @@ use crate::launch_configs::launch_config::LaunchConfig;
 use crate::linear::{LinearAction, LinearIssueWork};
 use crate::root_view::{
     NewWorkspaceSource, OpenLaunchConfigArg, can_access_team_features_for_profile,
-    open_new_window_get_handles, open_new_with_workspace_source,
+    can_open_launch_config_for_profile, open_new_window_get_handles,
+    open_new_with_workspace_source,
 };
 use crate::server::ids::ServerId;
 use crate::server::telemetry::{LaunchConfigUiLocation, TelemetryEvent};
 use crate::settings_view::{
-    OpenTeamsSettingsModalArgs, SettingsSection, settings_widget_deeplink_target,
+    OpenTeamsSettingsModalArgs, SettingsSection, settings_widget_deeplink_target_for_profile,
 };
 use crate::tab_configs::TabConfig;
+use crate::tab_configs::tab_config::TabConfigPaneType;
 use crate::user_config::{load_launch_configs, load_tab_configs, tab_configs_dir};
 use crate::util::openable_file_type::{
     is_file_openable_in_warp, is_markdown_file, is_runnable_shell_script,
@@ -141,7 +144,28 @@ impl FromStr for UriHost {
 }
 
 impl UriHost {
+    fn is_supported_for_profile(&self, product_profile: ProductProfile) -> bool {
+        match self {
+            Self::Auth => product_profile.supports_authentication(),
+            Self::Team | Self::SharedSession | Self::Conversation | Self::Drive => {
+                product_profile.supports_cloud_features()
+            }
+            Self::Mcp | Self::Codex | Self::Linear => product_profile.supports_ai_features(),
+            Self::Action
+            | Self::Launch
+            | Self::TabConfig
+            | Self::Settings
+            | Self::Home
+            | Self::Session => true,
+        }
+    }
+
     fn handle(&self, primary_window_id: Option<WindowId>, url: &Url, ctx: &mut AppContext) {
+        if !self.is_supported_for_profile(ChannelState::product_profile()) {
+            log::warn!("Ignoring unsupported URI host for the current product profile");
+            return;
+        }
+
         // Handle host
         match self {
             UriHost::Auth => {
@@ -190,7 +214,16 @@ impl UriHost {
             }
             UriHost::Action => {
                 match Action::parse(url) {
-                    Ok(action) => action.handle(primary_window_id, url, ctx),
+                    Ok(action)
+                        if action.is_supported_for_profile(ChannelState::product_profile()) =>
+                    {
+                        action.handle(primary_window_id, url, ctx)
+                    }
+                    Ok(_) => {
+                        log::warn!(
+                            "Ignoring unsupported URI action for the current product profile"
+                        );
+                    }
                     Err(err) => {
                         log::warn!("{err}");
                     }
@@ -202,6 +235,16 @@ impl UriHost {
                     if let Some(config) =
                         find_matching_config(desired_config_path.as_str(), &configs)
                     {
+                        if !can_open_launch_config_for_profile(
+                            config,
+                            ChannelState::product_profile(),
+                        ) {
+                            log::warn!(
+                                "Ignoring launch config with unsupported panes for the current product profile"
+                            );
+                            return;
+                        }
+
                         ctx.dispatch_global_action(
                             "root_view:open_launch_config",
                             &OpenLaunchConfigArg {
@@ -355,6 +398,11 @@ impl UriHost {
                 }
             }
             UriHost::Settings => {
+                if !settings_uri_is_supported_for_profile(url, ChannelState::product_profile()) {
+                    log::warn!("Ignoring unsupported settings URI for the current product profile");
+                    return;
+                }
+
                 // We support opening different settings pages through URI:
                 // - warp://settings - opens a settings tab on the default page
                 // - warp://settings?q={query} - opens settings with the search bar pre-filled
@@ -428,17 +476,24 @@ impl UriHost {
                     // sub-pages (e.g. billing_and_usage, platform, appearance,
                     // warp_agent) resolved via `settings_section_for_simple_subpage`.
                     maybe_simple_subpage => {
-                        let simple_section =
-                            maybe_simple_subpage.and_then(settings_section_for_simple_subpage);
+                        let simple_section = maybe_simple_subpage.and_then(|subpage| {
+                            settings_section_for_simple_subpage_for_profile(
+                                subpage,
+                                ChannelState::product_profile(),
+                            )
+                        });
                         // Pull the non-empty `q` search query out of the already
                         // parsed pairs to pre-fill the settings search bar.
                         let search_query = query_string
                             .get("q")
                             .map(|query| query.to_string())
                             .filter(|query| !query.is_empty());
-                        let widget_target = query_string
-                            .get("widget")
-                            .and_then(|slug| settings_widget_deeplink_target(slug));
+                        let widget_target = query_string.get("widget").and_then(|slug| {
+                            settings_widget_deeplink_target_for_profile(
+                                slug,
+                                ChannelState::product_profile(),
+                            )
+                        });
 
                         if let Some((page, widget_id)) = widget_target {
                             // `?widget=` scrolls to a specific widget; it takes
@@ -801,6 +856,11 @@ fn handle_tab_config_uri(primary_window_id: Option<WindowId>, url: &Url, ctx: &m
         return;
     };
 
+    if !tab_config_is_supported_for_profile(&config, ChannelState::product_profile()) {
+        log::warn!("Ignoring tab config with unsupported panes for the current product profile");
+        return;
+    }
+
     let force_new_window = url
         .query_pairs()
         .any(|(k, v)| k == "new_window" && matches!(v.as_ref(), "1" | "true"));
@@ -935,6 +995,22 @@ enum Action {
 }
 
 impl Action {
+    fn is_supported_for_profile(&self, product_profile: ProductProfile) -> bool {
+        match self {
+            Self::CloudAgentSetup
+            | Self::NewCloudAgentConversation
+            | Self::NewAgentConversation
+            | Self::CreateEnvironment { .. }
+            | Self::FocusCloudMode
+            | Self::AutoHandoffToCloud { .. } => product_profile.supports_ai_features(),
+            Self::NewTab
+            | Self::NewWindow
+            | Self::OpenFileEditor { .. }
+            | Self::Docker
+            | Self::OpenRepo => true,
+        }
+    }
+
     fn parse(url: &Url) -> Result<Self> {
         match url.path() {
             "/new_tab" => Ok(Self::NewTab),
@@ -1678,6 +1754,94 @@ fn settings_section_for_simple_subpage(subpage: &str) -> Option<SettingsSection>
     }
 }
 
+fn settings_section_for_simple_subpage_for_profile(
+    subpage: &str,
+    product_profile: ProductProfile,
+) -> Option<SettingsSection> {
+    match product_profile {
+        ProductProfile::Full => settings_section_for_simple_subpage(subpage),
+        ProductProfile::TerminalOnly => match subpage {
+            "appearance" => Some(SettingsSection::Appearance),
+            "features" => Some(SettingsSection::Features),
+            "keybindings" => Some(SettingsSection::Keybindings),
+            "privacy" => Some(SettingsSection::Privacy),
+            "about" => Some(SettingsSection::About),
+            _ => None,
+        },
+    }
+}
+
+fn settings_uri_is_supported_for_profile(url: &Url, product_profile: ProductProfile) -> bool {
+    if product_profile == ProductProfile::Full {
+        return true;
+    }
+
+    let settings_subpage = url
+        .path_segments()
+        .into_iter()
+        .flatten()
+        .last()
+        .filter(|subpage| !subpage.is_empty());
+    let widget = url.query_pairs().find(|(key, _)| key == "widget");
+
+    let path_is_allowed = match settings_subpage {
+        None => true,
+        Some(subpage) => settings_section_for_simple_subpage_for_profile(subpage, product_profile)
+            .is_some_and(|section| section.is_allowed(product_profile)),
+    };
+    if !path_is_allowed {
+        return false;
+    }
+
+    if let Some((_, widget_slug)) = widget {
+        return settings_widget_deeplink_target_for_profile(&widget_slug, product_profile)
+            .is_some_and(|(section, _)| section.is_allowed(product_profile));
+    }
+
+    true
+}
+
+fn tab_config_is_supported_for_profile(
+    config: &TabConfig,
+    product_profile: ProductProfile,
+) -> bool {
+    // Tab configs encode their split tree as a flat list, so this checks every
+    // descendant pane rather than only the root node referenced by the URI.
+    product_profile != ProductProfile::TerminalOnly
+        || config
+            .panes
+            .iter()
+            .all(|pane| matches!(pane.pane_type, None | Some(TabConfigPaneType::Terminal)))
+}
+
+fn tab_config_uri_is_supported_for_profile(url: &Url, product_profile: ProductProfile) -> bool {
+    if product_profile != ProductProfile::TerminalOnly {
+        return true;
+    }
+
+    let Some(desired) = get_launch_config_path(url.path()) else {
+        return true;
+    };
+    let (configs, _) = load_tab_configs(&tab_configs_dir());
+
+    find_matching_tab_config(desired.as_str(), configs)
+        .is_none_or(|config| tab_config_is_supported_for_profile(&config, product_profile))
+}
+
+fn launch_config_uri_is_supported_for_profile(url: &Url, product_profile: ProductProfile) -> bool {
+    if product_profile != ProductProfile::TerminalOnly {
+        return true;
+    }
+
+    let Some(desired) = get_launch_config_path(url.path()) else {
+        return true;
+    };
+    let configs = load_launch_configs(&crate::user_config::launch_configs_dir());
+
+    find_matching_config(desired.as_str(), &configs)
+        .is_none_or(|config| can_open_launch_config_for_profile(config, product_profile))
+}
+
 /// Validates an incoming custom URI for security and returns the host.
 fn validate_custom_uri(url: &Url) -> Result<UriHost> {
     // For now the only scheme we support is `[scheme_name]://[host_str]/...
@@ -1694,6 +1858,32 @@ fn validate_custom_uri(url: &Url) -> Result<UriHost> {
         .ok_or_else(|| anyhow!("Received url with no host str"))?;
 
     let host = UriHost::from_str(host_str)?;
+
+    ensure!(
+        host.is_supported_for_profile(ChannelState::product_profile()),
+        "Received URI host unsupported by the current product profile"
+    );
+
+    if host == UriHost::Settings {
+        ensure!(
+            settings_uri_is_supported_for_profile(url, ChannelState::product_profile()),
+            "Received settings URI unsupported by the current product profile"
+        );
+    }
+
+    if host == UriHost::TabConfig {
+        ensure!(
+            tab_config_uri_is_supported_for_profile(url, ChannelState::product_profile()),
+            "Received tab config URI unsupported by the current product profile"
+        );
+    }
+
+    if host == UriHost::Launch {
+        ensure!(
+            launch_config_uri_is_supported_for_profile(url, ChannelState::product_profile()),
+            "Received launch config URI unsupported by the current product profile"
+        );
+    }
 
     // Check if this host is allowed to have arbitrary paths.
     let host_allows_arbitrary_path = match host {

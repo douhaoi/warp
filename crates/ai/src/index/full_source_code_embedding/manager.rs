@@ -293,7 +293,7 @@ pub struct CodebaseIndexManager {
     store_client: Arc<dyn StoreClient>,
 
     #[cfg(feature = "local_fs")]
-    watcher: ModelHandle<BulkFilesystemWatcher>,
+    watcher: Option<ModelHandle<BulkFilesystemWatcher>>,
 
     build_queue: BuildQueue,
 
@@ -372,12 +372,6 @@ impl CodebaseIndexManager {
             indexing_enabled,
             restore_persisted_indices_on_startup,
         } = config;
-        cfg_if::cfg_if! {
-            if #[cfg(feature = "local_fs")] {
-                let file_watcher = ctx.add_model(|ctx| BulkFilesystemWatcher::new(REPO_WATCHER_DEBOUNCE_DURATION, ctx));
-                ctx.subscribe_to_model(&file_watcher, Self::handle_watcher_event);
-            }
-        }
         if !indexing_enabled {
             log::debug!(
                 "Codebase indexing disabled for this launch mode; skipping restore of {:?} persisted codebase indices",
@@ -389,7 +383,7 @@ impl CodebaseIndexManager {
                 last_emitted_codebase_index_statuses: HashMap::new(),
                 store_client,
                 #[cfg(feature = "local_fs")]
-                watcher: file_watcher,
+                watcher: None,
                 build_queue: BuildQueue::empty(),
                 max_indices: max_index_count,
                 max_files_repo_limit,
@@ -399,6 +393,14 @@ impl CodebaseIndexManager {
                 snapshot_storage,
             };
         }
+
+        #[cfg(feature = "local_fs")]
+        let file_watcher = {
+            let file_watcher = ctx
+                .add_model(|ctx| BulkFilesystemWatcher::new(REPO_WATCHER_DEBOUNCE_DURATION, ctx));
+            ctx.subscribe_to_model(&file_watcher, Self::handle_watcher_event);
+            Some(file_watcher)
+        };
 
         log::debug!(
             "Received {:?} persisted codebase indices",
@@ -452,7 +454,7 @@ impl CodebaseIndexManager {
     #[cfg(feature = "test-util")]
     pub fn new_for_test(store_client: Arc<dyn StoreClient>, ctx: &mut ModelContext<Self>) -> Self {
         #[cfg(feature = "local_fs")]
-        let file_watcher = ctx.add_model(|_| BulkFilesystemWatcher::new_for_test());
+        let file_watcher = Some(ctx.add_model(|_| BulkFilesystemWatcher::new_for_test()));
         Self {
             codebase_indices: HashMap::new(),
             last_emitted_codebase_index_statuses: HashMap::new(),
@@ -868,7 +870,10 @@ impl CodebaseIndexManager {
         });
 
         let watch_filter = WatchFilter::with_filter(filter.clone(), filter);
-        self.watcher.update(ctx, |watcher, _ctx| {
+        let Some(watcher) = self.watcher.as_ref() else {
+            return;
+        };
+        watcher.update(ctx, |watcher, _ctx| {
             std::mem::drop(watcher.register_path(
                 root_path,
                 watch_filter,
@@ -879,7 +884,10 @@ impl CodebaseIndexManager {
 
     #[cfg(feature = "local_fs")]
     fn unwatch_path(&self, root_path: &Path, ctx: &mut ModelContext<Self>) {
-        self.watcher.update(ctx, |watcher, _ctx| {
+        let Some(watcher) = self.watcher.as_ref() else {
+            return;
+        };
+        watcher.update(ctx, |watcher, _ctx| {
             std::mem::drop(watcher.unregister_path(root_path));
         });
     }

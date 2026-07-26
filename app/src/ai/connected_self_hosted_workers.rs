@@ -1,3 +1,4 @@
+use warp_core::channel::{ChannelState, ProductProfile};
 use warp_errors::report_error;
 use warpui::{Entity, ModelContext, SingletonEntity};
 
@@ -8,6 +9,10 @@ use crate::server::server_api::ServerApiProvider;
 use crate::server::server_api::ai::ConnectedSelfHostedWorker;
 use crate::workspaces::user_workspaces::{UserWorkspaces, UserWorkspacesEvent};
 pub const WARP_WORKER_HOST: &str = "warp";
+
+fn connected_self_hosted_workers_refresh_is_enabled_for_profile(profile: ProductProfile) -> bool {
+    profile.supports_ai_features()
+}
 
 pub enum ConnectedSelfHostedWorkersEvent {
     Changed,
@@ -75,6 +80,13 @@ impl ConnectedSelfHostedWorkersModel {
     }
 
     pub fn refresh(&mut self, ctx: &mut ModelContext<Self>) {
+        if !connected_self_hosted_workers_refresh_is_enabled_for_profile(
+            ChannelState::product_profile(),
+        ) {
+            self.clear_workers(ctx);
+            return;
+        }
+
         if !AuthStateProvider::as_ref(ctx).get().is_logged_in() {
             self.clear_workers(ctx);
             return;

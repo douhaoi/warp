@@ -60,6 +60,7 @@ use crate::server::cloud_objects::update_manager::UpdateManager;
 use crate::server::experiments::ServerExperiments;
 use crate::server::server_api::ServerApiProvider;
 use crate::server::sync_queue::SyncQueue;
+use crate::server::telemetry::AgentModeEntrypoint;
 use crate::server::telemetry::context_provider::AppTelemetryContextProvider;
 use crate::settings::PrivacySettings;
 use crate::settings::cloud_preferences_syncer::CloudPreferencesSyncer;
@@ -93,40 +94,113 @@ use crate::{
 };
 
 #[test]
-fn terminal_only_workspace_panel_eligibility_disables_tools_and_code_review() {
-    for item in [
-        HeaderToolbarItemKind::ToolsPanel,
-        HeaderToolbarItemKind::CodeReview,
+fn terminal_only_workspace_action_allowlist_keeps_terminal_core_and_rejects_product_actions() {
+    for action in [
+        WorkspaceAction::AddDefaultTab,
+        WorkspaceAction::AddTerminalTab {
+            hide_homepage: false,
+        },
+        WorkspaceAction::ActivateNextTab,
+        WorkspaceAction::CloseActiveTab,
+        WorkspaceAction::ShowSettings,
+        WorkspaceAction::ToggleKeybindingsPage,
+        WorkspaceAction::ToggleVerticalTabsPanel,
+        WorkspaceAction::NavigateNextPaneOrPanel,
+        WorkspaceAction::RunCommand("echo terminal".into()),
+        WorkspaceAction::SelectNewSessionMenuItem(NewSessionMenuItem::CreateNewTabGroup),
+        WorkspaceAction::StartTabDrag,
+        WorkspaceAction::DropTab,
     ] {
-        assert!(item.is_supported_for_profile(ProductProfile::Full));
-        assert!(!item.is_supported_for_profile(ProductProfile::TerminalOnly));
+        assert!(workspace_action_is_supported_for_profile(
+            &action,
+            ProductProfile::TerminalOnly,
+            false,
+        ));
     }
 
-    assert!(tools_panel_is_supported_for_profile(ProductProfile::Full));
-    assert!(!tools_panel_is_supported_for_profile(
-        ProductProfile::TerminalOnly
+    let mut terminal_config = crate::tab_configs::TabConfig {
+        name: "terminal".into(),
+        title: None,
+        color: None,
+        panes: Vec::new(),
+        params: std::collections::HashMap::new(),
+        source_path: None,
+    };
+    terminal_config
+        .panes
+        .push(crate::tab_configs::tab_config::TabConfigPaneNode {
+            id: "terminal".into(),
+            pane_type: Some(crate::tab_configs::tab_config::TabConfigPaneType::Terminal),
+            split: None,
+            children: None,
+            is_focused: Some(true),
+            directory: None,
+            commands: None,
+            shell: None,
+        });
+    assert!(workspace_action_is_supported_for_profile(
+        &WorkspaceAction::SelectTabConfig(terminal_config.clone()),
+        ProductProfile::TerminalOnly,
+        false,
+    ));
+    terminal_config.panes[0].pane_type =
+        Some(crate::tab_configs::tab_config::TabConfigPaneType::Agent);
+    assert!(!workspace_action_is_supported_for_profile(
+        &WorkspaceAction::SelectTabConfig(terminal_config),
+        ProductProfile::TerminalOnly,
+        false,
     ));
 
     for action in [
-        WorkspaceAction::ToggleWarpDrive,
-        WorkspaceAction::OpenWarpDrive,
-        WorkspaceAction::ToggleProjectExplorer,
-        WorkspaceAction::OpenProjectExplorer,
-        WorkspaceAction::ToggleGlobalSearch,
-        WorkspaceAction::OpenGlobalSearch,
-        WorkspaceAction::ToggleConversationListView,
-        WorkspaceAction::OpenConversationListView,
+        WorkspaceAction::NewTabInAgentMode {
+            entrypoint: AgentModeEntrypoint::TabBar,
+            zero_state_prompt_suggestion_type: None,
+        },
+        WorkspaceAction::NewPaneInAgentMode {
+            entrypoint: AgentModeEntrypoint::NewPaneBinding,
+            zero_state_prompt_suggestion_type: None,
+        },
+        WorkspaceAction::AddAgentTab,
+        WorkspaceAction::AddAmbientAgentTab,
+        WorkspaceAction::OpenMCPServerCollection,
+        WorkspaceAction::OpenEnvironmentManagementPane,
+        WorkspaceAction::HideAIDocumentPanes,
+        WorkspaceAction::CreatePersonalNotebook,
+        WorkspaceAction::CreatePersonalWorkflow,
+        WorkspaceAction::ShowHandoffEnvironmentCreationModal,
+        WorkspaceAction::ShowUpgrade,
+        WorkspaceAction::LogOut,
     ] {
-        assert!(is_terminal_only_panel_action_disabled(&action));
+        assert!(!workspace_action_is_supported_for_profile(
+            &action,
+            ProductProfile::TerminalOnly,
+            false,
+        ));
+        assert!(workspace_action_is_supported_for_profile(
+            &action,
+            ProductProfile::Full,
+            false,
+        ));
     }
-    assert!(!is_terminal_only_panel_action_disabled(
-        &WorkspaceAction::ClosePanel
+}
+
+#[test]
+fn terminal_only_authentication_dispatch_guards_are_fail_closed() {
+    assert!(
+        !crate::workspace::global_actions::authentication_global_actions_are_supported_for_profile(
+            ProductProfile::TerminalOnly
+        )
+    );
+    assert!(
+        crate::workspace::global_actions::authentication_global_actions_are_supported_for_profile(
+            ProductProfile::Full
+        )
+    );
+    assert!(!crate::auth::logout_is_supported_for_profile(
+        ProductProfile::TerminalOnly
     ));
-    assert!(!is_terminal_only_panel_action_disabled(
-        &WorkspaceAction::ToggleLeftPanel
-    ));
-    assert!(!is_terminal_only_panel_action_disabled(
-        &WorkspaceAction::ToggleRightPanel
+    assert!(crate::auth::logout_is_supported_for_profile(
+        ProductProfile::Full
     ));
 }
 

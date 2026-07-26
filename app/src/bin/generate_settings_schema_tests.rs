@@ -1,6 +1,14 @@
 use super::*;
 
 #[test]
+fn oss_channel_uses_dev_feature_flags() {
+    assert_eq!(
+        active_flags_for_channel("oss"),
+        active_flags_for_channel("dev")
+    );
+}
+
+#[test]
 fn surface_annotation_matches_setting_schema_entry_metadata() {
     ensure_settings_linked();
 

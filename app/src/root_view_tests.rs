@@ -5,13 +5,17 @@ use warpui::{App, SingletonEntity};
 
 use super::{
     AccountFirstCompletion, HAS_COMPLETED_ONBOARDING_KEY, RootView,
-    can_access_team_features_for_profile, has_completed_local_onboarding,
+    can_access_team_features_for_profile, can_open_launch_config_for_profile,
+    can_show_needs_sso_link_for_profile, has_completed_local_onboarding,
     offer_variant_for_account_class, refresh_pending_onboarding_choices,
     requires_post_onboarding_login,
 };
 use crate::auth::AuthStateProvider;
 use crate::auth::auth_manager::AuthManager;
 use crate::channel::ProductProfile;
+use crate::launch_configs::launch_config::{
+    PaneMode, PaneTemplateType, make_mock_single_window_launch_config,
+};
 use crate::server::server_api::ServerApiProvider;
 use crate::workspaces::workspace::FtueAccountClass;
 
@@ -69,6 +73,38 @@ fn team_feature_profile_eligibility_preserves_full_and_disables_terminal_only() 
     ] {
         assert_eq!(can_access_team_features_for_profile(profile), can_handle);
     }
+}
+
+#[test]
+fn launch_configs_with_non_terminal_panes_are_rejected_in_terminal_only() {
+    let mut config = make_mock_single_window_launch_config();
+    assert!(can_open_launch_config_for_profile(
+        &config,
+        ProductProfile::TerminalOnly
+    ));
+
+    let PaneTemplateType::PaneTemplate { pane_mode, .. } = &mut config.windows[0].tabs[0].layout
+    else {
+        panic!("mock launch config should contain a leaf pane");
+    };
+    *pane_mode = PaneMode::Agent;
+
+    assert!(!can_open_launch_config_for_profile(
+        &config,
+        ProductProfile::TerminalOnly
+    ));
+    assert!(can_open_launch_config_for_profile(
+        &config,
+        ProductProfile::Full
+    ));
+}
+
+#[test]
+fn sso_link_view_is_not_available_in_terminal_only() {
+    assert!(can_show_needs_sso_link_for_profile(ProductProfile::Full));
+    assert!(!can_show_needs_sso_link_for_profile(
+        ProductProfile::TerminalOnly
+    ));
 }
 
 #[test]

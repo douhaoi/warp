@@ -3,11 +3,10 @@
 // Windows).
 #![allow(clippy::disallowed_types)]
 
-use std::env;
 use std::fmt::Write;
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::{env, fs};
 
 use cfg_aliases::cfg_aliases;
 use sha2::{Digest, Sha256};
